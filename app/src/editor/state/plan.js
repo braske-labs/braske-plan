@@ -104,6 +104,28 @@ export function planReducer(plan, action) {
       });
     }
 
+    case "plan/rectangles/delete": {
+      const rectangleIndex = plan.entities.rectangles.findIndex((rectangle) => rectangle.id === action.rectangleId);
+      if (rectangleIndex < 0) {
+        return plan;
+      }
+
+      const deletedRectangleId = action.rectangleId;
+      const nextRectangles = plan.entities.rectangles.filter((rectangle) => rectangle.id !== deletedRectangleId);
+      const nextRooms = cleanupRoomsAfterRectangleDelete(plan.entities.rooms, deletedRectangleId);
+      const nextOpenings = cleanupOpeningsAfterRectangleDelete(plan.entities.openings, deletedRectangleId);
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          rectangles: nextRectangles,
+          openings: nextOpenings,
+          rooms: nextRooms
+        }
+      });
+    }
+
     case "plan/rectangles/move": {
       const rectangleIndex = plan.entities.rectangles.findIndex((rectangle) => rectangle.id === action.rectangleId);
       if (rectangleIndex < 0) {
@@ -280,4 +302,45 @@ function clampNumber(value, min, max, fallback) {
     return fallback;
   }
   return Math.min(max, Math.max(min, value));
+}
+
+function cleanupRoomsAfterRectangleDelete(rooms, deletedRectangleId) {
+  if (!Array.isArray(rooms) || rooms.length === 0) {
+    return [];
+  }
+
+  const nextRooms = [];
+  for (const room of rooms) {
+    const rectangleIds = Array.isArray(room.rectangleIds)
+      ? room.rectangleIds.filter((rectangleId) => rectangleId !== deletedRectangleId)
+      : [];
+
+    if (rectangleIds.length === 0) {
+      continue;
+    }
+
+    nextRooms.push({
+      ...room,
+      rectangleIds
+    });
+  }
+
+  return nextRooms;
+}
+
+function cleanupOpeningsAfterRectangleDelete(openings, deletedRectangleId) {
+  if (!Array.isArray(openings) || openings.length === 0) {
+    return [];
+  }
+
+  return openings.filter((opening) => {
+    if (!opening || typeof opening !== "object") {
+      return false;
+    }
+    const host = opening.host;
+    if (!host || typeof host !== "object") {
+      return false;
+    }
+    return host.rectangleId !== deletedRectangleId;
+  });
 }

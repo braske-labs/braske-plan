@@ -9,6 +9,7 @@ import {
   rectangleMeetsMinimumSize,
   resizeRectangleFromHandle
 } from "./geometry/rectangles.js";
+import { snapDraggedRectangle, snapResizedRectangle } from "./geometry/snapping.js";
 import { createPlanAutosaveController, loadPersistedPlan } from "./persistence/local-plan-storage.js";
 import { createInitialEditorState } from "./state/editor-ui.js";
 import { createEmptyPlan } from "./state/plan.js";
@@ -20,6 +21,7 @@ const BACKGROUND_NUDGE_STEP = 20;
 const BACKGROUND_OPACITY_STEP = 0.05;
 const BACKGROUND_SCALE_UP = 1.05;
 const BACKGROUND_SCALE_DOWN = 1 / BACKGROUND_SCALE_UP;
+const SNAP_TOLERANCE_PX = 10;
 
 export function mountEditorRuntime(options) {
   const { canvas, statusElement, overlayElement, shellElement, controls = {} } = options;
@@ -233,12 +235,29 @@ export function mountEditorRuntime(options) {
         x: dragRectangle.offsetX,
         y: dragRectangle.offsetY
       });
+      const draggedRectangle = state.plan.entities.rectangles.find(
+        (rectangle) => rectangle.id === dragRectangle.rectangleId
+      );
+      const proposedRectangle = draggedRectangle
+        ? {
+            x: nextPosition.x,
+            y: nextPosition.y,
+            w: draggedRectangle.w,
+            h: draggedRectangle.h
+          }
+        : { x: nextPosition.x, y: nextPosition.y, w: 0, h: 0 };
+      const snapResult = draggedRectangle
+        ? snapDraggedRectangle(proposedRectangle, state.plan.entities.rectangles, {
+            excludeRectangleId: dragRectangle.rectangleId,
+            toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom
+          })
+        : { rectangle: proposedRectangle };
 
       store.dispatch({
         type: "plan/rectangles/move",
         rectangleId: dragRectangle.rectangleId,
-        x: nextPosition.x,
-        y: nextPosition.y
+        x: snapResult.rectangle.x,
+        y: snapResult.rectangle.y
       });
       store.dispatch({
         type: "editor/interaction/rectDragMove",
@@ -279,14 +298,24 @@ export function mountEditorRuntime(options) {
         worldPoint,
         { minSize: MIN_RECT_SIZE }
       );
+      const snappedRect = snapResizedRectangle(
+        nextRect,
+        resizeState.handleName,
+        state.plan.entities.rectangles,
+        {
+          excludeRectangleId: resizeState.rectangleId,
+          toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom,
+          minSize: MIN_RECT_SIZE
+        }
+      ).rectangle;
 
       store.dispatch({
         type: "plan/rectangles/setGeometry",
         rectangleId: resizeState.rectangleId,
-        x: nextRect.x,
-        y: nextRect.y,
-        w: nextRect.w,
-        h: nextRect.h
+        x: snappedRect.x,
+        y: snappedRect.y,
+        w: snappedRect.w,
+        h: snappedRect.h
       });
       store.dispatch({
         type: "editor/interaction/resizeMove",
@@ -388,6 +417,12 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.deleteSelectedButton) {
+    controls.deleteSelectedButton.addEventListener("click", () => {
+      deleteSelectedRectangle();
+    });
+  }
+
   if (controls.backgroundOpacityDownButton) {
     controls.backgroundOpacityDownButton.addEventListener("click", () => {
       const { plan } = store.getState();
@@ -443,6 +478,25 @@ export function mountEditorRuntime(options) {
       store.dispatch({ type: "plan/background/scaleUniform", factor: BACKGROUND_SCALE_UP });
     });
   }
+
+  const onWindowKeyDown = (event) => {
+    if (shouldIgnoreGlobalKeyDown(event)) {
+      return;
+    }
+
+    if (event.key !== "Delete" && event.key !== "Backspace") {
+      return;
+    }
+
+    event.preventDefault();
+
+    const didDelete = deleteSelectedRectangle();
+    if (!didDelete) {
+      return;
+    }
+  };
+
+  window.addEventListener("keydown", onWindowKeyDown);
 
   store.subscribe(() => {
     syncEditorChrome();
@@ -578,7 +632,7 @@ export function mountEditorRuntime(options) {
       const autosaveLabel = formatAutosaveStatusShort(persistenceStatus);
       const backgroundLabel = formatBackgroundShort(plan.background, backgroundImageState);
       statusElement.textContent =
-        `T-0007 background | ${backgroundLabel} | ${autosaveLabel} | tool ${tool} | drag rect move | drag empty pan | wheel zoom | ` +
+        `T-0008 snapping | ${backgroundLabel} | ${autosaveLabel} | tool ${tool} | drag/resize snap | delete key | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId} | ` +
@@ -587,10 +641,11 @@ export function mountEditorRuntime(options) {
 
     if (overlayElement) {
       overlayElement.innerHTML =
-        `T-0007 active (background controls). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `T-0008 active (basic snapping + delete-selected). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
         `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
         `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
         `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
+        `Drag/resize snaps within ${SNAP_TOLERANCE_PX}px. Delete uses toolbar button or Delete/Backspace.<br>` +
         `Autosave/load still active: ${describeLoadSource(persistenceStatus.loadSource)}; ${formatAutosaveStatusDetail(persistenceStatus)}.`;
     }
   }
@@ -608,6 +663,9 @@ export function mountEditorRuntime(options) {
     }
     if (controls.toolDrawRectButton) {
       controls.toolDrawRectButton.setAttribute("aria-pressed", state.tool === "drawRect" ? "true" : "false");
+    }
+    if (controls.deleteSelectedButton) {
+      controls.deleteSelectedButton.disabled = state.selection.rectangleId == null;
     }
     if (controls.backgroundStatusElement) {
       controls.backgroundStatusElement.textContent = formatBackgroundShort(snapshot.plan.background, backgroundImageState);
@@ -680,12 +738,30 @@ export function mountEditorRuntime(options) {
       resizeObserver.disconnect();
     }
     window.removeEventListener("resize", resize);
+    window.removeEventListener("keydown", onWindowKeyDown);
     canvas.removeEventListener("pointerdown", onPointerDown);
     canvas.removeEventListener("pointermove", onPointerMove);
     canvas.removeEventListener("pointerup", onPointerUp);
     canvas.removeEventListener("pointercancel", onPointerCancel);
     canvas.removeEventListener("pointerleave", onPointerLeave);
     canvas.removeEventListener("wheel", onWheel);
+  }
+
+  function deleteSelectedRectangle() {
+    const state = store.getState();
+    const selectedRectangleId = state.editorState.selection.rectangleId;
+    if (!selectedRectangleId) {
+      return false;
+    }
+
+    store.dispatch({
+      type: "plan/rectangles/delete",
+      rectangleId: selectedRectangleId
+    });
+    store.dispatch({ type: "editor/selection/clear" });
+    store.dispatch({ type: "editor/interaction/end", pointerId: null });
+    syncEditorChrome();
+    return true;
   }
 }
 
@@ -710,6 +786,24 @@ function deriveNextUserRectangleId(plan) {
     }
   }
   return maxNumericId + 1;
+}
+
+function shouldIgnoreGlobalKeyDown(event) {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) {
+    return true;
+  }
+
+  const target = event.target;
+  if (!target || !(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (target.isContentEditable) {
+    return true;
+  }
+
+  const tagName = target.tagName;
+  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT";
 }
 
 function describeLoadSource(loadSource) {

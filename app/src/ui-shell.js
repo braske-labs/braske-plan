@@ -16,6 +16,7 @@ export function createEditorShell(root) {
   const seedDebugButton = root.querySelector("[data-editor-action='plan-seed-debug']");
   const toolNavigateButton = root.querySelector("[data-editor-action='tool-navigate']");
   const toolDrawRectButton = root.querySelector("[data-editor-action='tool-draw-rect']");
+  const deleteSelectedButton = root.querySelector("[data-editor-action='rect-delete']");
   const backgroundOpacityDownButton = root.querySelector("[data-editor-action='bg-opacity-down']");
   const backgroundOpacityUpButton = root.querySelector("[data-editor-action='bg-opacity-up']");
   const backgroundMoveLeftButton = root.querySelector("[data-editor-action='bg-move-left']");
@@ -39,6 +40,7 @@ export function createEditorShell(root) {
       seedDebugButton,
       toolNavigateButton,
       toolDrawRectButton,
+      deleteSelectedButton,
       backgroundOpacityDownButton,
       backgroundOpacityUpButton,
       backgroundMoveLeftButton,
@@ -62,7 +64,7 @@ function buildShell() {
         <h1>Apartment Planner MVP</h1>
       </div>
       <p>
-        T-0007 adds a real background image overlay with simple opacity/position/scale controls for tracing.
+        T-0008 adds basic snapping for rectangle drag/resize (edge/corner alignment), while keeping background controls collapsible.
       </p>
       <div class="meta-row" aria-label="Sprint metadata">
         <div class="pill">
@@ -71,19 +73,20 @@ function buildShell() {
         </div>
         <div class="pill">
           <strong>Ticket</strong>
-          T-0007
+          T-0008
         </div>
       </div>
       <ol class="checklist" aria-label="Immediate next steps">
-        <li>This ticket: render and adjust the plan background image for tracing.</li>
-        <li>Keep rectangle tools stable (draw/select/drag/resize/pan/zoom).</li>
-        <li>Next: basic snapping and delete-selected rectangle.</li>
+        <li>This ticket: snap drag/resize to nearby rectangle edges/corners.</li>
+        <li>Delete selected rectangle is also available for tracing mistakes.</li>
+        <li>Next: scale calibration (stretch) unless queue changes.</li>
       </ol>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">
       <div class="toolbar" role="toolbar" aria-label="Editor toolbar">
         <button type="button" data-editor-action="tool-navigate" aria-pressed="true">Navigate</button>
         <button type="button" data-editor-action="tool-draw-rect" aria-pressed="false">Draw Rect</button>
+        <button type="button" data-editor-action="rect-delete" disabled>Delete Rect</button>
         <details class="toolbar-disclosure bg-controls">
           <summary>
             <span class="toolbar-label">BG Controls</span>

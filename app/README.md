@@ -134,3 +134,37 @@ This ticket persists the `plan` only. Camera/tool/selection are intentionally tr
    - background position/size/opacity reopen with the latest values
 
 This ticket intentionally excludes rotation/warping/upload UI.
+
+## T-0010 manual smoke check (delete selected rectangle)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Ensure at least one rectangle exists (seed or create one).
+3. Click a rectangle to select it, then press `Delete Rect`:
+   - rectangle is removed
+   - selection clears
+4. Create/select another rectangle and press keyboard `Delete` or `Backspace`:
+   - rectangle is removed
+   - page does not navigate backward
+5. With no rectangle selected, press `Delete` / `Backspace`:
+   - safe no-op (no crash, no navigation)
+6. Reload after a delete:
+   - deletion persists (autosave integration)
+
+## T-0008 manual smoke check (basic snapping: edge/corner alignment)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Ensure at least two rectangles exist (use `Seed Debug Rects` plus create one if needed).
+3. Drag one rectangle near another rectangle edge:
+   - movement snaps when close (within a small pixel tolerance)
+4. Drag near another rectangle corner:
+   - x and y both snap when close, producing corner alignment
+5. Resize a selected rectangle edge/corner near another rectangle edge/corner:
+   - active edge/corner snaps while resizing
+6. Zoom in and out, then repeat drag/resize snaps:
+   - snap feel remains consistent across zoom levels (pixel-based tolerance)
+7. Confirm no persistent linking behavior:
+   - after snapping, moving the other rectangle does not move the snapped rectangle
+8. Confirm existing interactions still work:
+   - pan, background controls, delete-selected, autosave/reload
+
+This ticket does not add magnetic links/unlink persistence.

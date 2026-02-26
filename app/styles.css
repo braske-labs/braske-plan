@@ -188,6 +188,11 @@ body {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
 }
 
+.toolbar button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .toolbar button.primary {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
