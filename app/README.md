@@ -250,3 +250,19 @@ This harness is dependency-free and runs in the browser because local Node is cu
 7. Hover near top-right while a rectangle is selected:
    - hover tooltip still appears
    - labels do not hide critical UI readouts in a broken way
+
+## T-0016 manual smoke check (basic geometry validation status checks)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. On a fresh/new plan (before calibration):
+   - debug overlay shows a validation warning state (`WARN`)
+   - status/overlay text includes a validation warning mentioning missing scale
+3. Calibrate scale:
+   - missing-scale warning disappears (or warning count decreases if other warnings remain)
+   - validation summary updates without breaking interactions
+4. Create or drag rectangles so two rectangles overlap with area (not just touching edges):
+   - validation warning shows overlap warning/count
+5. Move rectangles apart so they only touch edges:
+   - overlap warning should clear (edge-touch is allowed)
+6. Confirm app remains responsive during drag/resize/pan/zoom with validation visible.
+7. Optional: open `http://127.0.0.1:4173/tests/` and confirm validation tests are listed in the browser test harness.

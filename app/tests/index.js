@@ -4,6 +4,7 @@ import "./specs/snapping.test.js";
 import "./specs/plan-reducer.test.js";
 import "./specs/coordinates.test.js";
 import "./specs/scale.test.js";
+import "./specs/validation.test.js";
 
 const summaryElement = document.querySelector("#summary");
 const resultsElement = document.querySelector("#results");

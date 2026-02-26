@@ -16,6 +16,7 @@ import {
   worldLengthToMeters
 } from "./geometry/scale.js";
 import { snapDraggedRectangle, snapResizedRectangle } from "./geometry/snapping.js";
+import { validateBasicPlanGeometry } from "./geometry/validation.js";
 import { createPlanAutosaveController, loadPersistedPlan } from "./persistence/local-plan-storage.js";
 import { createInitialEditorState } from "./state/editor-ui.js";
 import { createEmptyPlan } from "./state/plan.js";
@@ -80,6 +81,8 @@ export function mountEditorRuntime(options) {
     status: "idle",
     errorMessage: null
   };
+  let lastValidatedPlan = null;
+  let lastValidationResult = null;
   let nextUserRectangleId = deriveNextUserRectangleId(store.getState().plan);
 
   const resize = () => {
@@ -580,6 +583,8 @@ export function mountEditorRuntime(options) {
     const cssHeight = viewport.cssHeight;
     const dpr = viewport.dpr;
 
+    const validation = getBasicValidationResult(plan);
+
     ensureBackgroundImageLoaded(plan.background);
 
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -588,8 +593,8 @@ export function mountEditorRuntime(options) {
     context.fillRect(0, 0, cssWidth, cssHeight);
 
     drawWorld(context, plan, editorState, cssWidth, cssHeight, dpr);
-    drawScreenOverlay(context, editorState, plan, pointerHover, cssWidth, cssHeight);
-    updateUiReadouts(editorState, plan, timestamp);
+    drawScreenOverlay(context, editorState, plan, validation, pointerHover, cssWidth, cssHeight);
+    updateUiReadouts(editorState, plan, validation, timestamp);
   }
 
   function drawWorld(ctx, plan, editorState, cssWidth, cssHeight, dpr) {
@@ -616,7 +621,7 @@ export function mountEditorRuntime(options) {
     ctx.restore();
   }
 
-  function drawScreenOverlay(ctx, editorState, plan, hover, cssWidth, cssHeight) {
+  function drawScreenOverlay(ctx, editorState, plan, validation, hover, cssWidth, cssHeight) {
     const { camera } = editorState;
     const selectedRectangle = getSelectedRectangle(plan, editorState);
     const originScreen = worldToScreen(camera, 0, 0);
@@ -659,6 +664,8 @@ export function mountEditorRuntime(options) {
     ctx.fillText(`Scale: ${scaleLabel}`, 180, 18);
     ctx.fillText(`Sel world: ${formatSelectedRectangleDimensionsWorld(selectedRectangle)}`, 180, 34);
     ctx.fillText(`Sel metric: ${formatSelectedRectangleDimensionsMetric(selectedRectangle, plan.scale)}`, 180, 50);
+    ctx.fillText(`Validation: ${formatValidationSummaryDebug(validation)}`, 180, 66);
+    ctx.fillText(`${formatValidationPrimaryMessage(validation)}`, 180, 82);
     ctx.restore();
 
     drawSelectedRectangleDimensionLabels(ctx, editorState, plan, hover, cssWidth, cssHeight);
@@ -676,7 +683,7 @@ export function mountEditorRuntime(options) {
     }
   }
 
-  function updateUiReadouts(editorState, plan, timestamp) {
+  function updateUiReadouts(editorState, plan, validation, timestamp) {
     frameCount += 1;
     framesSinceSample += 1;
     const sampleDuration = timestamp - lastFpsSampleMs;
@@ -694,8 +701,9 @@ export function mountEditorRuntime(options) {
       const backgroundLabel = formatBackgroundShort(plan.background, backgroundImageState);
       const scaleLabel = formatScaleShort(plan.scale);
       const selectedDimsLabel = formatSelectedRectangleDimensionsStatus(getSelectedRectangle(plan, editorState), plan.scale);
+      const validationLabel = formatValidationSummaryStatus(validation);
       statusElement.textContent =
-        `T-0015 canvas labels | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | tool ${tool} | pan | wheel zoom | ` +
+        `T-0016 validation | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | tool ${tool} | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedDimsLabel ? ` (${selectedDimsLabel})` : ""} | ` +
@@ -705,15 +713,25 @@ export function mountEditorRuntime(options) {
     if (overlayElement) {
       const selectedRectangle = getSelectedRectangle(plan, editorState);
       overlayElement.innerHTML =
-        `T-0015 active (on-canvas selected-rectangle dimension labels + readouts). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `T-0016 active (basic geometry validation status + dimension labels/readouts). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
         `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
         `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
         `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
         `${formatScaleDetail(plan.scale)}. Use Calibrate Scale tool to draw a reference line and enter meters.<br>` +
         `Selected dimensions: ${formatSelectedRectangleDimensionsOverlay(selectedRectangle, plan.scale)}.<br>` +
+        `Validation: ${formatValidationDetail(validation)}.<br>` +
         `Drag/resize snaps within ${SNAP_TOLERANCE_PX}px. Delete uses toolbar button or Delete/Backspace.<br>` +
         `Autosave/load still active: ${describeLoadSource(persistenceStatus.loadSource)}; ${formatAutosaveStatusDetail(persistenceStatus)}.`;
     }
+  }
+
+  function getBasicValidationResult(plan) {
+    if (plan === lastValidatedPlan && lastValidationResult) {
+      return lastValidationResult;
+    }
+    lastValidatedPlan = plan;
+    lastValidationResult = validateBasicPlanGeometry(plan);
+    return lastValidationResult;
   }
 
   function syncEditorChrome() {
@@ -1065,6 +1083,43 @@ function formatSelectedRectangleDimensionsOverlay(rectangle, scale) {
   const worldLabel = `${rectangle.w.toFixed(1)} x ${rectangle.h.toFixed(1)} world units`;
   const metricLabel = formatSelectedRectangleDimensionsMetric(rectangle, scale);
   return `${worldLabel}; ${metricLabel}`;
+}
+
+function formatValidationSummaryDebug(validation) {
+  if (!validation || validation.status === "ok") {
+    return "OK";
+  }
+  return `WARN (${validation.warningCount})`;
+}
+
+function formatValidationSummaryStatus(validation) {
+  if (!validation || validation.status === "ok") {
+    return "validation ok";
+  }
+  return `validation warn:${validation.warningCount}`;
+}
+
+function formatValidationPrimaryMessage(validation) {
+  const finding = validation?.findings?.[0];
+  if (!finding) {
+    return "No basic geometry warnings";
+  }
+  return `First warning: ${finding.message}`;
+}
+
+function formatValidationDetail(validation) {
+  if (!validation) {
+    return "validation unavailable";
+  }
+
+  if (validation.warningCount === 0) {
+    return `OK (basic checks passed across ${validation.rectangleCount} rectangle${validation.rectangleCount === 1 ? "" : "s"})`;
+  }
+
+  const messages = validation.findings
+    .filter((finding) => finding.severity === "warning")
+    .map((finding) => finding.message);
+  return `WARN ${validation.warningCount}: ${messages.join("; ")}`;
 }
 
 function drawSelectedRectangleDimensionLabels(ctx, editorState, plan, hover, cssWidth, cssHeight) {

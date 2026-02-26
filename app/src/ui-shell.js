@@ -68,7 +68,7 @@ function buildShell() {
         <h1>Apartment Planner MVP</h1>
       </div>
       <p>
-        T-0015 adds on-canvas width/height labels for the selected rectangle, using calibrated meters/cm when scale is set.
+        T-0016 adds lightweight geometry validation status (warnings in debug/status UI) while keeping editing fast.
       </p>
       <div class="meta-row" aria-label="Sprint metadata">
         <div class="pill">
@@ -77,13 +77,13 @@ function buildShell() {
         </div>
         <div class="pill">
           <strong>Ticket</strong>
-          T-0015
+          T-0016
         </div>
       </div>
       <ol class="checklist" aria-label="Immediate next steps">
-        <li>This ticket: show on-canvas width/height labels for the selected rectangle.</li>
-        <li>Labels should stay legible while panning/zooming and update live during drag/resize.</li>
-        <li>Next: basic geometry validation checks.</li>
+        <li>This ticket: compute and show basic geometry warnings (debug/status UI is enough).</li>
+        <li>Detect at least one useful warning such as missing scale or overlapping rectangles.</li>
+        <li>Next: export/import JSON or deeper validation.</li>
       </ol>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">
