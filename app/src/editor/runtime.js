@@ -16,6 +16,10 @@ import { createEditorSessionStore } from "./state/session-store.js";
 
 const MIN_RECT_SIZE = 16;
 const HANDLE_SIZE_PX = 14;
+const BACKGROUND_NUDGE_STEP = 20;
+const BACKGROUND_OPACITY_STEP = 0.05;
+const BACKGROUND_SCALE_UP = 1.05;
+const BACKGROUND_SCALE_DOWN = 1 / BACKGROUND_SCALE_UP;
 
 export function mountEditorRuntime(options) {
   const { canvas, statusElement, overlayElement, shellElement, controls = {} } = options;
@@ -61,6 +65,12 @@ export function mountEditorRuntime(options) {
   let framesSinceSample = 0;
   let fps = 0;
   const pointerHover = { active: false, screenX: 0, screenY: 0 };
+  const backgroundImageState = {
+    src: null,
+    image: null,
+    status: "idle",
+    errorMessage: null
+  };
   let nextUserRectangleId = deriveNextUserRectangleId(store.getState().plan);
 
   const resize = () => {
@@ -378,6 +388,62 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.backgroundOpacityDownButton) {
+    controls.backgroundOpacityDownButton.addEventListener("click", () => {
+      const { plan } = store.getState();
+      store.dispatch({
+        type: "plan/background/setOpacity",
+        opacity: plan.background.opacity - BACKGROUND_OPACITY_STEP
+      });
+    });
+  }
+
+  if (controls.backgroundOpacityUpButton) {
+    controls.backgroundOpacityUpButton.addEventListener("click", () => {
+      const { plan } = store.getState();
+      store.dispatch({
+        type: "plan/background/setOpacity",
+        opacity: plan.background.opacity + BACKGROUND_OPACITY_STEP
+      });
+    });
+  }
+
+  if (controls.backgroundMoveLeftButton) {
+    controls.backgroundMoveLeftButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/background/nudge", dx: -BACKGROUND_NUDGE_STEP, dy: 0 });
+    });
+  }
+
+  if (controls.backgroundMoveRightButton) {
+    controls.backgroundMoveRightButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/background/nudge", dx: BACKGROUND_NUDGE_STEP, dy: 0 });
+    });
+  }
+
+  if (controls.backgroundMoveUpButton) {
+    controls.backgroundMoveUpButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/background/nudge", dx: 0, dy: -BACKGROUND_NUDGE_STEP });
+    });
+  }
+
+  if (controls.backgroundMoveDownButton) {
+    controls.backgroundMoveDownButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/background/nudge", dx: 0, dy: BACKGROUND_NUDGE_STEP });
+    });
+  }
+
+  if (controls.backgroundScaleDownButton) {
+    controls.backgroundScaleDownButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/background/scaleUniform", factor: BACKGROUND_SCALE_DOWN });
+    });
+  }
+
+  if (controls.backgroundScaleUpButton) {
+    controls.backgroundScaleUpButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/background/scaleUniform", factor: BACKGROUND_SCALE_UP });
+    });
+  }
+
   store.subscribe(() => {
     syncEditorChrome();
   });
@@ -408,6 +474,8 @@ export function mountEditorRuntime(options) {
     const cssHeight = viewport.cssHeight;
     const dpr = viewport.dpr;
 
+    ensureBackgroundImageLoaded(plan.background);
+
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, cssWidth, cssHeight);
     context.fillStyle = "#ffffff";
@@ -430,8 +498,8 @@ export function mountEditorRuntime(options) {
       -(camera.y * camera.zoom) * dpr
     );
 
+    drawBackgroundFrame(ctx, plan, backgroundImageState);
     drawGrid(ctx, camera, cssWidth, cssHeight);
-    drawBackgroundFrame(ctx, plan);
     drawDebugRectangles(ctx, plan, selection.rectangleId, camera);
     drawSelectedResizeHandles(ctx, plan, editorState);
     drawDraftRectangle(ctx, editorState, camera);
@@ -508,8 +576,9 @@ export function mountEditorRuntime(options) {
       const selectedId = editorState.selection.rectangleId ?? "none";
       const tool = editorState.tool;
       const autosaveLabel = formatAutosaveStatusShort(persistenceStatus);
+      const backgroundLabel = formatBackgroundShort(plan.background, backgroundImageState);
       statusElement.textContent =
-        `T-0003 autosave+reopen | ${autosaveLabel} | tool ${tool} | drag rect move | drag empty pan | wheel zoom | ` +
+        `T-0007 background | ${backgroundLabel} | ${autosaveLabel} | tool ${tool} | drag rect move | drag empty pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId} | ` +
@@ -518,14 +587,17 @@ export function mountEditorRuntime(options) {
 
     if (overlayElement) {
       overlayElement.innerHTML =
-        `T-0003 active (autosave + reopen). Loaded: ${describeLoadSource(persistenceStatus.loadSource)}.<br>` +
-        `Autosave: ${formatAutosaveStatusDetail(persistenceStatus)}.<br>` +
-        `Rectangle tools from T-0006 are still active (draw/create/resize, pan, zoom).`;
+        `T-0007 active (background controls). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
+        `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
+        `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
+        `Autosave/load still active: ${describeLoadSource(persistenceStatus.loadSource)}; ${formatAutosaveStatusDetail(persistenceStatus)}.`;
     }
   }
 
   function syncEditorChrome() {
-    const state = store.getState().editorState;
+    const snapshot = store.getState();
+    const state = snapshot.editorState;
     const mode = state.interaction.mode;
     if (shellElement) {
       shellElement.dataset.panMode = mode;
@@ -537,6 +609,65 @@ export function mountEditorRuntime(options) {
     if (controls.toolDrawRectButton) {
       controls.toolDrawRectButton.setAttribute("aria-pressed", state.tool === "drawRect" ? "true" : "false");
     }
+    if (controls.backgroundStatusElement) {
+      controls.backgroundStatusElement.textContent = formatBackgroundShort(snapshot.plan.background, backgroundImageState);
+    }
+  }
+
+  function ensureBackgroundImageLoaded(background) {
+    const source = background?.source;
+    if (!source || typeof source !== "string") {
+      if (backgroundImageState.src !== null) {
+        backgroundImageState.src = null;
+        backgroundImageState.image = null;
+        backgroundImageState.status = "idle";
+        backgroundImageState.errorMessage = null;
+        syncEditorChrome();
+      }
+      return;
+    }
+
+    if (
+      backgroundImageState.src === source &&
+      (
+        backgroundImageState.status === "loading" ||
+        backgroundImageState.status === "ready" ||
+        backgroundImageState.status === "error"
+      )
+    ) {
+      return;
+    }
+
+    backgroundImageState.src = source;
+    backgroundImageState.image = null;
+    backgroundImageState.status = "loading";
+    backgroundImageState.errorMessage = null;
+    syncEditorChrome();
+
+    const image = new Image();
+    image.decoding = "async";
+
+    image.addEventListener("load", () => {
+      if (backgroundImageState.src !== source) {
+        return;
+      }
+      backgroundImageState.image = image;
+      backgroundImageState.status = "ready";
+      backgroundImageState.errorMessage = null;
+      syncEditorChrome();
+    });
+
+    image.addEventListener("error", () => {
+      if (backgroundImageState.src !== source) {
+        return;
+      }
+      backgroundImageState.image = null;
+      backgroundImageState.status = "error";
+      backgroundImageState.errorMessage = "image-load-failed";
+      syncEditorChrome();
+    });
+
+    image.src = source;
   }
 
   function destroy() {
@@ -648,6 +779,25 @@ function formatTimeCompact(isoString) {
   });
 }
 
+function formatBackgroundShort(background, backgroundImageState) {
+  const opacityPercent = Math.round((background?.opacity ?? 0) * 100);
+  const imageStatus = formatBackgroundImageStatus(backgroundImageState);
+  return `bg ${opacityPercent}% (${imageStatus})`;
+}
+
+function formatBackgroundImageStatus(backgroundImageState) {
+  switch (backgroundImageState?.status) {
+    case "ready":
+      return "loaded";
+    case "loading":
+      return "loading";
+    case "error":
+      return "load error";
+    default:
+      return "idle";
+  }
+}
+
 function drawGrid(ctx, camera, cssWidth, cssHeight) {
   const major = 100;
   const minor = 20;
@@ -691,18 +841,44 @@ function drawGrid(ctx, camera, cssWidth, cssHeight) {
   }
 }
 
-function drawBackgroundFrame(ctx, plan) {
+function drawBackgroundFrame(ctx, plan, backgroundImageState) {
   const background = plan.background;
   if (!background?.transform) return;
 
   const { x, y, width, height } = background.transform;
+  const opacity = Math.max(0, Math.min(1, background.opacity ?? 0.35));
+  const image = backgroundImageState?.status === "ready" ? backgroundImageState.image : null;
+
+  if (image) {
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(image, x, y, width, height);
+    ctx.restore();
+  } else {
+    ctx.save();
+    ctx.fillStyle = "rgba(11, 110, 79, 0.03)";
+    ctx.fillRect(x, y, width, height);
+    ctx.restore();
+  }
+
   ctx.save();
-  ctx.fillStyle = "rgba(11, 110, 79, 0.03)";
   ctx.strokeStyle = "rgba(11, 110, 79, 0.25)";
   ctx.lineWidth = 1.2;
   ctx.setLineDash([10, 8]);
-  ctx.fillRect(x, y, width, height);
   ctx.strokeRect(x, y, width, height);
+  if (!image) {
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(11, 110, 79, 0.55)";
+    ctx.font = "14px Georgia, serif";
+    ctx.textBaseline = "top";
+    ctx.fillText(
+      backgroundImageState?.status === "error" ? "Background image failed to load" : "Background image loading...",
+      x + 10,
+      y + 10
+    );
+    ctx.setLineDash([10, 8]);
+  }
   ctx.setLineDash([]);
   ctx.restore();
 }

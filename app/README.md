@@ -114,3 +114,23 @@ This slice intentionally excludes snapping/magnetic alignment. Those come later.
    - seeded rectangles should reopen again
 
 This ticket persists the `plan` only. Camera/tool/selection are intentionally transient.
+
+## T-0007 manual smoke check (background overlay controls)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Confirm the sidebar says `T-0007` and the toolbar shows background controls (`Opacity`, `Left/Right/Up/Down`, `Scale`).
+   - controls may be inside a collapsed `BG Controls` disclosure
+3. Confirm the background image is visible in the dashed frame area (not just a blank placeholder).
+4. Press `Opacity -` and `Opacity +`:
+   - image becomes more/less visible
+   - toolbar/status reflects updated background state
+5. Press `Left/Right/Up/Down`:
+   - background image shifts while rectangles remain unchanged
+6. Press `Scale -` and `Scale +`:
+   - background image scales uniformly (frame size changes)
+7. Verify existing editor interactions still work with background visible:
+   - pan, zoom, select, drag, create, resize
+8. Make a background adjustment, wait for autosave, reload page:
+   - background position/size/opacity reopen with the latest values
+
+This ticket intentionally excludes rotation/warping/upload UI.

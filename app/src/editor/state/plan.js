@@ -33,6 +33,66 @@ export function planReducer(plan, action) {
     case "plan/replace":
       return stampPlan(action.plan);
 
+    case "plan/background/setOpacity": {
+      const nextOpacity = clampNumber(action.opacity, 0, 1, plan.background.opacity);
+      if (nextOpacity === plan.background.opacity) {
+        return plan;
+      }
+      return stampPlan({
+        ...plan,
+        background: {
+          ...plan.background,
+          opacity: nextOpacity
+        }
+      });
+    }
+
+    case "plan/background/nudge": {
+      const dx = Number.isFinite(action.dx) ? action.dx : 0;
+      const dy = Number.isFinite(action.dy) ? action.dy : 0;
+      if (dx === 0 && dy === 0) {
+        return plan;
+      }
+
+      const nextTransform = nudgeBackgroundTransform(plan.background.transform, dx, dy);
+      return stampPlan({
+        ...plan,
+        background: {
+          ...plan.background,
+          transform: nextTransform
+        }
+      });
+    }
+
+    case "plan/background/scaleUniform": {
+      const factor = Number.isFinite(action.factor) ? action.factor : 1;
+      if (factor === 1) {
+        return plan;
+      }
+
+      const nextTransform = scaleBackgroundTransformUniform(plan.background.transform, factor, {
+        minWidth: 40,
+        minHeight: 40
+      });
+
+      if (
+        nextTransform.x === plan.background.transform.x &&
+        nextTransform.y === plan.background.transform.y &&
+        nextTransform.width === plan.background.transform.width &&
+        nextTransform.height === plan.background.transform.height
+      ) {
+        return plan;
+      }
+
+      return stampPlan({
+        ...plan,
+        background: {
+          ...plan.background,
+          transform: nextTransform
+        }
+      });
+    }
+
     case "plan/rectangles/create": {
       const nextRectangle = action.rectangle ?? createRoomRectangleEntity(action.rectangleId, action.x, action.y, action.w, action.h);
       return stampPlan({
@@ -187,4 +247,37 @@ function createRoomRectangleEntity(id, x, y, w, h) {
     roomId: null,
     label: null
   };
+}
+
+function nudgeBackgroundTransform(transform, dx, dy) {
+  return {
+    ...transform,
+    x: transform.x + dx,
+    y: transform.y + dy
+  };
+}
+
+function scaleBackgroundTransformUniform(transform, factor, options = {}) {
+  const minWidth = options.minWidth ?? 1;
+  const minHeight = options.minHeight ?? 1;
+  const centerX = transform.x + transform.width / 2;
+  const centerY = transform.y + transform.height / 2;
+
+  const nextWidth = Math.max(minWidth, transform.width * factor);
+  const nextHeight = Math.max(minHeight, transform.height * factor);
+
+  return {
+    ...transform,
+    x: centerX - nextWidth / 2,
+    y: centerY - nextHeight / 2,
+    width: nextWidth,
+    height: nextHeight
+  };
+}
+
+function clampNumber(value, min, max, fallback) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
 }
