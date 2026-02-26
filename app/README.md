@@ -95,3 +95,22 @@ This slice still excludes create/resize/snapping/magnetic links (`T-0006` and la
    - creating/resizing still works after plan reset
 
 This slice intentionally excludes snapping/magnetic alignment. Those come later.
+
+## T-0003 manual smoke check (autosave + reopen last plan)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Confirm the sidebar says `T-0003` and the status/overlay mentions autosave.
+3. Make a visible edit:
+   - move a rectangle, or
+   - create a new rectangle, or
+   - resize a rectangle
+4. Wait about 1 second:
+   - status should show an autosave message (`pending` -> `saved`)
+5. Reload the page:
+   - the edited plan state should reopen automatically (same rectangles/positions/sizes)
+6. Press `New Empty Plan`, wait for autosave, then reload:
+   - the empty plan state should reopen (reset persists)
+7. Press `Seed Debug Rects`, wait for autosave, then reload:
+   - seeded rectangles should reopen again
+
+This ticket persists the `plan` only. Camera/tool/selection are intentionally transient.

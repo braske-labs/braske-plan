@@ -44,8 +44,7 @@ function buildShell() {
         <h1>Apartment Planner MVP</h1>
       </div>
       <p>
-        T-0006 adds rectangle creation and resize handles on top of the existing selection/drag runtime,
-        still without snapping.
+        T-0003 adds autosave and reopen on top of the current rectangle editor so work survives close/reload.
       </p>
       <div class="meta-row" aria-label="Sprint metadata">
         <div class="pill">
@@ -54,13 +53,13 @@ function buildShell() {
         </div>
         <div class="pill">
           <strong>Ticket</strong>
-          T-0006
+          T-0003
         </div>
       </div>
       <ol class="checklist" aria-label="Immediate next steps">
-        <li>This ticket: draw rectangles and resize selected rectangles.</li>
-        <li>Keep select/drag/pan behavior stable and explicit.</li>
-        <li>Next: snapping/magnetic behavior in later tickets.</li>
+        <li>This ticket: autosave plan edits and reload the last saved plan on startup.</li>
+        <li>Keep rectangle tools stable (draw/select/drag/resize/pan/zoom).</li>
+        <li>Next: background overlay controls and basic snapping.</li>
       </ol>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">

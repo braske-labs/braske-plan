@@ -9,6 +9,7 @@ import {
   rectangleMeetsMinimumSize,
   resizeRectangleFromHandle
 } from "./geometry/rectangles.js";
+import { createPlanAutosaveController, loadPersistedPlan } from "./persistence/local-plan-storage.js";
 import { createInitialEditorState } from "./state/editor-ui.js";
 import { createEmptyPlan } from "./state/plan.js";
 import { createEditorSessionStore } from "./state/session-store.js";
@@ -23,12 +24,35 @@ export function mountEditorRuntime(options) {
     throw new Error("2D canvas context is required");
   }
 
+  const persistedPlanLoad = loadPersistedPlan();
+  const initialPlan = persistedPlanLoad.plan ?? createEmptyPlan();
+  let persistenceStatus = {
+    loadSource: persistedPlanLoad.source,
+    phase: "idle",
+    lastSavedAt: null,
+    lastActionType: null,
+    errorMessage: persistedPlanLoad.error
+      ? (persistedPlanLoad.error instanceof Error ? persistedPlanLoad.error.message : String(persistedPlanLoad.error))
+      : null
+  };
+
   const store = createEditorSessionStore({
-    plan: createEmptyPlan(),
+    plan: initialPlan,
     editorState: createInitialEditorState()
   });
 
-  store.dispatch({ type: "plan/debugSeedRectangles" });
+  const autosaveController = createPlanAutosaveController(store, {
+    onStatus(nextStatus) {
+      persistenceStatus = {
+        ...persistenceStatus,
+        ...nextStatus
+      };
+    }
+  });
+
+  if (!persistedPlanLoad.plan) {
+    store.dispatch({ type: "plan/debugSeedRectangles" });
+  }
 
   let destroyed = false;
   let rafId = 0;
@@ -37,7 +61,7 @@ export function mountEditorRuntime(options) {
   let framesSinceSample = 0;
   let fps = 0;
   const pointerHover = { active: false, screenX: 0, screenY: 0 };
-  let nextUserRectangleId = 1;
+  let nextUserRectangleId = deriveNextUserRectangleId(store.getState().plan);
 
   const resize = () => {
     const rect = canvas.getBoundingClientRect();
@@ -483,8 +507,9 @@ export function mountEditorRuntime(options) {
       const camera = editorState.camera;
       const selectedId = editorState.selection.rectangleId ?? "none";
       const tool = editorState.tool;
+      const autosaveLabel = formatAutosaveStatusShort(persistenceStatus);
       statusElement.textContent =
-        `T-0006 create+resize | tool ${tool} | drag rect move | drag empty pan | wheel zoom | ` +
+        `T-0003 autosave+reopen | ${autosaveLabel} | tool ${tool} | drag rect move | drag empty pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId} | ` +
@@ -493,9 +518,9 @@ export function mountEditorRuntime(options) {
 
     if (overlayElement) {
       overlayElement.innerHTML =
-        `T-0006 active.<br>` +
-        `Use Draw Rect tool to drag-create rectangles. In Navigate tool, drag selected rectangle or use handles to resize.<br>` +
-        `No snapping in this slice.`;
+        `T-0003 active (autosave + reopen). Loaded: ${describeLoadSource(persistenceStatus.loadSource)}.<br>` +
+        `Autosave: ${formatAutosaveStatusDetail(persistenceStatus)}.<br>` +
+        `Rectangle tools from T-0006 are still active (draw/create/resize, pan, zoom).`;
     }
   }
 
@@ -516,6 +541,7 @@ export function mountEditorRuntime(options) {
 
   function destroy() {
     destroyed = true;
+    autosaveController.destroy();
     if (rafId) {
       cancelAnimationFrame(rafId);
     }
@@ -538,6 +564,88 @@ function toCanvasLocalPoint(canvas, clientX, clientY) {
     x: clientX - rect.left,
     y: clientY - rect.top
   };
+}
+
+function deriveNextUserRectangleId(plan) {
+  let maxNumericId = 0;
+  for (const rectangle of plan.entities.rectangles) {
+    const match = /^rect_user_(\d+)$/.exec(rectangle.id);
+    if (!match) {
+      continue;
+    }
+    const numericId = Number.parseInt(match[1], 10);
+    if (Number.isFinite(numericId)) {
+      maxNumericId = Math.max(maxNumericId, numericId);
+    }
+  }
+  return maxNumericId + 1;
+}
+
+function describeLoadSource(loadSource) {
+  switch (loadSource) {
+    case "localStorage":
+      return "saved local plan";
+    case "none":
+      return "default sample plan";
+    case "storage-unavailable":
+      return "default plan (local storage unavailable)";
+    case "parse-error":
+      return "default plan (saved JSON invalid)";
+    case "invalid-plan":
+      return "default plan (saved plan invalid)";
+    case "storage-read-error":
+      return "default plan (storage read error)";
+    default:
+      return "default plan";
+  }
+}
+
+function formatAutosaveStatusShort(status) {
+  if (!status || status.phase === "disabled") {
+    return "autosave disabled";
+  }
+  if (status.phase === "error") {
+    return "autosave error";
+  }
+  if (status.phase === "scheduled") {
+    return "autosave pending";
+  }
+  if (status.phase === "saved") {
+    return `autosave saved ${formatTimeCompact(status.lastSavedAt)}`;
+  }
+  return "autosave idle";
+}
+
+function formatAutosaveStatusDetail(status) {
+  if (!status || status.phase === "disabled") {
+    return "disabled";
+  }
+  if (status.phase === "error") {
+    return `error${status.errorMessage ? ` (${status.errorMessage})` : ""}`;
+  }
+  if (status.phase === "scheduled") {
+    return `pending${status.lastActionType ? ` after ${status.lastActionType}` : ""}`;
+  }
+  if (status.phase === "saved") {
+    const time = formatTimeCompact(status.lastSavedAt);
+    return `saved${time ? ` at ${time}` : ""}${status.lastActionType ? ` after ${status.lastActionType}` : ""}`;
+  }
+  return "idle";
+}
+
+function formatTimeCompact(isoString) {
+  if (!isoString) {
+    return "";
+  }
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
 function drawGrid(ctx, camera, cssWidth, cssHeight) {
