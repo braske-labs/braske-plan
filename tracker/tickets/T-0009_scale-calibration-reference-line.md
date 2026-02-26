@@ -43,3 +43,4 @@ Prefer pure math helpers for calibration calculation and line length conversion.
 - 2026-02-26 11:31: Ticket created as S002 stretch backlog.
 - 2026-02-26 14:10: Started implementation after adding test harness ticket (`T-0011`).
 - 2026-02-26 14:10: Implemented calibration tool + persisted scale model updates; pending manual browser verification.
+- 2026-02-26 14:xx: Carried over to S003 as open work (status remains IN_PROGRESS pending manual verification and closeout).

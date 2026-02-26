@@ -102,13 +102,20 @@ export function snapDraggedRectangle(proposedRectangle, rectangles, options = {}
     { name: "bottom", value: proposedRectangle.y + proposedRectangle.h }
   ];
 
+  const xDragCandidates = generateAxisSnapCandidates(xAnchors, xTargets, toleranceWorld, {
+    pairFilter: (anchor, target) =>
+      isOppositeEdgePair("x", anchor.name, target.edge) ||
+      isSameEdgePair("x", anchor.name, target.edge)
+  });
+  const yDragCandidates = generateAxisSnapCandidates(yAnchors, yTargets, toleranceWorld, {
+    pairFilter: (anchor, target) =>
+      isOppositeEdgePair("y", anchor.name, target.edge) ||
+      isSameEdgePair("y", anchor.name, target.edge)
+  });
+
   const xCandidate = chooseBestAxisSnapCandidate(
     filterValidAxisCandidates(
-      generateAxisSnapCandidates(xAnchors, xTargets, toleranceWorld, {
-        pairFilter: (anchor, target) =>
-          isOppositeEdgePair("x", anchor.name, target.edge) ||
-          isSameEdgePair("x", anchor.name, target.edge)
-      }),
+      xDragCandidates,
       (candidate) => {
         const targetRectangle = rectanglesById.get(candidate.target.rectangleId);
         if (!targetRectangle) return false;
@@ -116,23 +123,13 @@ export function snapDraggedRectangle(proposedRectangle, rectangles, options = {}
           ...proposedRectangle,
           x: proposedRectangle.x + candidate.delta
         };
-        if (isOppositeEdgePair("x", candidate.anchor.name, candidate.target.edge)) {
-          return (
-            rectanglesTouchOnAxis(nextRectangle, targetRectangle, "x") &&
-            rectanglesContactOrOverlapOnAxis(nextRectangle, targetRectangle, "y")
-          );
-        }
-        return rectanglesTouchOnAxis(nextRectangle, targetRectangle, "y");
+        return isValidDraggedAxisCandidateOnRectangle(nextRectangle, candidate, targetRectangle, "x");
       }
     )
   );
   const yCandidate = chooseBestAxisSnapCandidate(
     filterValidAxisCandidates(
-      generateAxisSnapCandidates(yAnchors, yTargets, toleranceWorld, {
-        pairFilter: (anchor, target) =>
-          isOppositeEdgePair("y", anchor.name, target.edge) ||
-          isSameEdgePair("y", anchor.name, target.edge)
-      }),
+      yDragCandidates,
       (candidate) => {
         const targetRectangle = rectanglesById.get(candidate.target.rectangleId);
         if (!targetRectangle) return false;
@@ -140,13 +137,7 @@ export function snapDraggedRectangle(proposedRectangle, rectangles, options = {}
           ...proposedRectangle,
           y: proposedRectangle.y + candidate.delta
         };
-        if (isOppositeEdgePair("y", candidate.anchor.name, candidate.target.edge)) {
-          return (
-            rectanglesTouchOnAxis(nextRectangle, targetRectangle, "y") &&
-            rectanglesContactOrOverlapOnAxis(nextRectangle, targetRectangle, "x")
-          );
-        }
-        return rectanglesTouchOnAxis(nextRectangle, targetRectangle, "x");
+        return isValidDraggedAxisCandidateOnRectangle(nextRectangle, candidate, targetRectangle, "y");
       }
     )
   );
@@ -156,6 +147,26 @@ export function snapDraggedRectangle(proposedRectangle, rectangles, options = {}
     return dualCandidate;
   }
 
+  const compatibleRawDualAxisCandidate = chooseBestCompatibleDragDualAxisSnap(
+    proposedRectangle,
+    xDragCandidates,
+    yDragCandidates,
+    rectanglesById
+  );
+  if (compatibleRawDualAxisCandidate) {
+    return compatibleRawDualAxisCandidate;
+  }
+
+  const compatibleDualAxisCandidate = chooseCompatibleDragDualAxisSnap(
+    proposedRectangle,
+    xCandidate,
+    yCandidate,
+    rectanglesById
+  );
+  if (compatibleDualAxisCandidate) {
+    return compatibleDualAxisCandidate;
+  }
+
   if (!xCandidate && !yCandidate) {
     return {
       rectangle: proposedRectangle,
@@ -163,7 +174,8 @@ export function snapDraggedRectangle(proposedRectangle, rectangles, options = {}
     };
   }
 
-  if (xCandidate && (!yCandidate || xCandidate.distance <= yCandidate.distance)) {
+  const preferredAxis = choosePreferredDragSingleAxisSnapAxis(xCandidate, yCandidate);
+  if (preferredAxis === "x" && xCandidate) {
     return {
       rectangle: {
         ...proposedRectangle,
@@ -176,14 +188,24 @@ export function snapDraggedRectangle(proposedRectangle, rectangles, options = {}
     };
   }
 
+  if (preferredAxis === "y" && yCandidate) {
+    return {
+      rectangle: {
+        ...proposedRectangle,
+        y: proposedRectangle.y + yCandidate.delta
+      },
+      snap: {
+        x: null,
+        y: yCandidate
+      }
+    };
+  }
+
   return {
-    rectangle: {
-      ...proposedRectangle,
-      y: proposedRectangle.y + yCandidate.delta
-    },
+    rectangle: proposedRectangle,
     snap: {
       x: null,
-      y: yCandidate
+      y: null
     }
   };
 }
@@ -426,6 +448,101 @@ function chooseBestDragCornerSnap(proposedRectangle, xAnchors, yAnchors, xTarget
   };
 }
 
+function chooseCompatibleDragDualAxisSnap(proposedRectangle, xCandidate, yCandidate, rectanglesById) {
+  if (!xCandidate || !yCandidate) {
+    return null;
+  }
+
+  const xTargetRectangle = rectanglesById.get(xCandidate.target.rectangleId);
+  const yTargetRectangle = rectanglesById.get(yCandidate.target.rectangleId);
+  if (!xTargetRectangle || !yTargetRectangle) {
+    return null;
+  }
+
+  const nextRectangle = {
+    ...proposedRectangle,
+    x: proposedRectangle.x + xCandidate.delta,
+    y: proposedRectangle.y + yCandidate.delta
+  };
+
+  if (!isValidDraggedAxisCandidateOnRectangle(nextRectangle, xCandidate, xTargetRectangle, "x")) {
+    return null;
+  }
+  if (!isValidDraggedAxisCandidateOnRectangle(nextRectangle, yCandidate, yTargetRectangle, "y")) {
+    return null;
+  }
+
+  return {
+    rectangle: nextRectangle,
+    snap: {
+      x: xCandidate,
+      y: yCandidate
+    }
+  };
+}
+
+function chooseBestCompatibleDragDualAxisSnap(proposedRectangle, xCandidates, yCandidates, rectanglesById) {
+  if (!Array.isArray(xCandidates) || !Array.isArray(yCandidates) || xCandidates.length === 0 || yCandidates.length === 0) {
+    return null;
+  }
+
+  let best = null;
+
+  for (const xCandidate of xCandidates) {
+    const xTargetRectangle = rectanglesById.get(xCandidate?.target?.rectangleId);
+    if (!xTargetRectangle) {
+      continue;
+    }
+
+    for (const yCandidate of yCandidates) {
+      const yTargetRectangle = rectanglesById.get(yCandidate?.target?.rectangleId);
+      if (!yTargetRectangle) {
+        continue;
+      }
+
+      const nextRectangle = {
+        ...proposedRectangle,
+        x: proposedRectangle.x + xCandidate.delta,
+        y: proposedRectangle.y + yCandidate.delta
+      };
+
+      if (!isValidDraggedAxisCandidateOnRectangle(nextRectangle, xCandidate, xTargetRectangle, "x")) {
+        continue;
+      }
+      if (!isValidDraggedAxisCandidateOnRectangle(nextRectangle, yCandidate, yTargetRectangle, "y")) {
+        continue;
+      }
+
+      const score = xCandidate.distance + yCandidate.distance;
+      if (
+        !best ||
+        score < best.score ||
+        (score === best.score && Math.abs(xCandidate.delta) + Math.abs(yCandidate.delta) < best.magnitude)
+      ) {
+        best = {
+          score,
+          magnitude: Math.abs(xCandidate.delta) + Math.abs(yCandidate.delta),
+          xCandidate,
+          yCandidate,
+          nextRectangle
+        };
+      }
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  return {
+    rectangle: best.nextRectangle,
+    snap: {
+      x: best.xCandidate,
+      y: best.yCandidate
+    }
+  };
+}
+
 function chooseBestResizeCornerSnap(
   proposedRectangle,
   handleName,
@@ -501,6 +618,64 @@ function filterValidAxisCandidates(candidates, predicate) {
   return result;
 }
 
+function isValidDraggedAxisCandidateOnRectangle(nextRectangle, candidate, targetRectangle, axis) {
+  if (!candidate || !targetRectangle) {
+    return false;
+  }
+
+  if (isOppositeEdgePair(axis, candidate.anchor.name, candidate.target.edge)) {
+    return (
+      rectanglesTouchOnAxis(nextRectangle, targetRectangle, axis) &&
+      rectanglesContactOrOverlapOnAxis(nextRectangle, targetRectangle, perpendicularAxis(axis))
+    );
+  }
+
+  if (isSameEdgePair(axis, candidate.anchor.name, candidate.target.edge)) {
+    return rectanglesTouchOnAxis(nextRectangle, targetRectangle, perpendicularAxis(axis));
+  }
+
+  return false;
+}
+
+function choosePreferredDragSingleAxisSnapAxis(xCandidate, yCandidate) {
+  if (!xCandidate && !yCandidate) {
+    return null;
+  }
+  if (!xCandidate) {
+    return "y";
+  }
+  if (!yCandidate) {
+    return "x";
+  }
+
+  const epsilon = 1e-6;
+  const xIsMaintainedConstraint = approximatelyEqual(xCandidate.delta, 0, epsilon);
+  const yIsMaintainedConstraint = approximatelyEqual(yCandidate.delta, 0, epsilon);
+
+  if (xIsMaintainedConstraint && !yIsMaintainedConstraint) {
+    return "y";
+  }
+  if (yIsMaintainedConstraint && !xIsMaintainedConstraint) {
+    return "x";
+  }
+
+  if (xCandidate.distance < yCandidate.distance) {
+    return "x";
+  }
+  if (yCandidate.distance < xCandidate.distance) {
+    return "y";
+  }
+
+  if (Math.abs(xCandidate.delta) < Math.abs(yCandidate.delta)) {
+    return "x";
+  }
+  if (Math.abs(yCandidate.delta) < Math.abs(xCandidate.delta)) {
+    return "y";
+  }
+
+  return "x";
+}
+
 function indexRectanglesById(rectangles) {
   const map = new Map();
   for (const rectangle of rectangles ?? []) {
@@ -510,6 +685,10 @@ function indexRectanglesById(rectangles) {
     map.set(rectangle.id, rectangle);
   }
   return map;
+}
+
+function perpendicularAxis(axis) {
+  return axis === "x" ? "y" : axis === "y" ? "x" : null;
 }
 
 function isOppositeEdgePair(axis, anchorEdge, targetEdge) {

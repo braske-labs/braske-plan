@@ -30,3 +30,4 @@ Node is currently broken on this machine (`icu4c` mismatch), so use a browser ES
 ## Log (append-only)
 - 2026-02-26 14:10: Ticket created after user requested unit-test coverage before continuing feature work.
 - 2026-02-26 14:10: Implemented browser ESM test harness and initial pure-module coverage; pending manual browser run.
+- 2026-02-26 14:xx: Carried over to S003 as open work (status remains IN_PROGRESS pending manual run and results).
