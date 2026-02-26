@@ -68,7 +68,7 @@ function buildShell() {
         <h1>Apartment Planner MVP</h1>
       </div>
       <p>
-        T-0014 adds selected-rectangle dimension readouts in world units and meters/cm (when the plan has been calibrated).
+        T-0015 adds on-canvas width/height labels for the selected rectangle, using calibrated meters/cm when scale is set.
       </p>
       <div class="meta-row" aria-label="Sprint metadata">
         <div class="pill">
@@ -77,13 +77,13 @@ function buildShell() {
         </div>
         <div class="pill">
           <strong>Ticket</strong>
-          T-0014
+          T-0015
         </div>
       </div>
       <ol class="checklist" aria-label="Immediate next steps">
-        <li>This ticket: show selected rectangle dimensions in world units and calibrated meters/cm.</li>
-        <li>Dimension readouts should update live during drag/resize.</li>
-        <li>Next: geometry validation checks and richer dimension UX.</li>
+        <li>This ticket: show on-canvas width/height labels for the selected rectangle.</li>
+        <li>Labels should stay legible while panning/zooming and update live during drag/resize.</li>
+        <li>Next: basic geometry validation checks.</li>
       </ol>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">

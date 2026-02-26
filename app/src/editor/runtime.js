@@ -661,6 +661,8 @@ export function mountEditorRuntime(options) {
     ctx.fillText(`Sel metric: ${formatSelectedRectangleDimensionsMetric(selectedRectangle, plan.scale)}`, 180, 50);
     ctx.restore();
 
+    drawSelectedRectangleDimensionLabels(ctx, editorState, plan, hover, cssWidth, cssHeight);
+
     if (hover.active) {
       const world = screenToWorld(camera, hover.screenX, hover.screenY);
       ctx.save();
@@ -693,7 +695,7 @@ export function mountEditorRuntime(options) {
       const scaleLabel = formatScaleShort(plan.scale);
       const selectedDimsLabel = formatSelectedRectangleDimensionsStatus(getSelectedRectangle(plan, editorState), plan.scale);
       statusElement.textContent =
-        `T-0014 dimensions | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | tool ${tool} | pan | wheel zoom | ` +
+        `T-0015 canvas labels | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | tool ${tool} | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedDimsLabel ? ` (${selectedDimsLabel})` : ""} | ` +
@@ -703,7 +705,7 @@ export function mountEditorRuntime(options) {
     if (overlayElement) {
       const selectedRectangle = getSelectedRectangle(plan, editorState);
       overlayElement.innerHTML =
-        `T-0014 active (dimension readouts from calibrated scale). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `T-0015 active (on-canvas selected-rectangle dimension labels + readouts). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
         `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
         `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
         `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
@@ -1063,6 +1065,200 @@ function formatSelectedRectangleDimensionsOverlay(rectangle, scale) {
   const worldLabel = `${rectangle.w.toFixed(1)} x ${rectangle.h.toFixed(1)} world units`;
   const metricLabel = formatSelectedRectangleDimensionsMetric(rectangle, scale);
   return `${worldLabel}; ${metricLabel}`;
+}
+
+function drawSelectedRectangleDimensionLabels(ctx, editorState, plan, hover, cssWidth, cssHeight) {
+  const rectangle = getSelectedRectangle(plan, editorState);
+  if (!rectangle) {
+    return;
+  }
+
+  const topLeft = worldToScreen(editorState.camera, rectangle.x, rectangle.y);
+  const bottomRight = worldToScreen(editorState.camera, rectangle.x + rectangle.w, rectangle.y + rectangle.h);
+  const left = Math.min(topLeft.x, bottomRight.x);
+  const right = Math.max(topLeft.x, bottomRight.x);
+  const top = Math.min(topLeft.y, bottomRight.y);
+  const bottom = Math.max(topLeft.y, bottomRight.y);
+
+  if (right < -48 || left > cssWidth + 48 || bottom < -48 || top > cssHeight + 48) {
+    return;
+  }
+
+  const widthLabel = `W ${formatSelectedRectangleCanvasDimension(rectangle.w, plan.scale)}`;
+  const heightLabel = `H ${formatSelectedRectangleCanvasDimension(rectangle.h, plan.scale)}`;
+  const reservedRects = [{ x: 12, y: 12, w: 470, h: 122 }];
+  if (hover.active) {
+    reservedRects.push({ x: cssWidth - 180, y: 12, w: 168, h: 28 });
+  }
+
+  const widthCenterX = (left + right) / 2;
+  const widthPlacement = chooseScreenLabelPlacement(
+    ctx,
+    widthLabel,
+    [
+      { x: widthCenterX, y: top - 10, anchorX: "center", anchorY: "bottom", side: "top" },
+      { x: widthCenterX, y: bottom + 10, anchorX: "center", anchorY: "top", side: "bottom" }
+    ],
+    cssWidth,
+    cssHeight,
+    reservedRects
+  );
+
+  const heightCenterY = (top + bottom) / 2;
+  const heightPlacement = chooseScreenLabelPlacement(
+    ctx,
+    heightLabel,
+    [
+      { x: right + 10, y: heightCenterY, anchorX: "left", anchorY: "middle", side: "right" },
+      { x: left - 10, y: heightCenterY, anchorX: "right", anchorY: "middle", side: "left" }
+    ],
+    cssWidth,
+    cssHeight,
+    reservedRects
+  );
+
+  ctx.save();
+  ctx.font = "12px Georgia, serif";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 1;
+
+  if (widthPlacement) {
+    drawDimensionLeaderLine(ctx, {
+      x0: widthCenterX,
+      y0: widthPlacement.side === "top" ? top : bottom,
+      x1: widthCenterX,
+      y1: widthPlacement.side === "top" ? widthPlacement.box.y + widthPlacement.box.h : widthPlacement.box.y
+    });
+    drawDimensionLabelBubble(ctx, widthPlacement.box, widthLabel, {
+      fillStyle: "rgba(35, 85, 235, 0.92)",
+      strokeStyle: "rgba(19, 44, 125, 0.95)",
+      textColor: "#ffffff"
+    });
+  }
+
+  if (heightPlacement) {
+    drawDimensionLeaderLine(ctx, {
+      x0: heightPlacement.side === "right" ? right : left,
+      y0: heightCenterY,
+      x1: heightPlacement.side === "right" ? heightPlacement.box.x : heightPlacement.box.x + heightPlacement.box.w,
+      y1: heightCenterY
+    });
+    drawDimensionLabelBubble(ctx, heightPlacement.box, heightLabel, {
+      fillStyle: "rgba(178, 86, 15, 0.92)",
+      strokeStyle: "rgba(110, 50, 8, 0.95)",
+      textColor: "#ffffff"
+    });
+  }
+
+  ctx.restore();
+}
+
+function formatSelectedRectangleCanvasDimension(worldLength, scale) {
+  if (!Number.isFinite(worldLength) || worldLength < 0) {
+    return "n/a";
+  }
+
+  const meters = worldLengthToMeters(worldLength, scale?.metersPerWorldUnit);
+  if (meters == null) {
+    return `${worldLength.toFixed(1)} wu`;
+  }
+
+  return formatMetersAndCentimeters(meters, {
+    metersDecimals: 2,
+    centimetersDecimals: 1
+  }) ?? `${worldLength.toFixed(1)} wu`;
+}
+
+function chooseScreenLabelPlacement(ctx, label, candidates, cssWidth, cssHeight, reservedRects) {
+  const measured = measureScreenLabelBox(ctx, label);
+  for (const candidate of candidates) {
+    const box = placeScreenLabelBox(measured, candidate, cssWidth, cssHeight);
+    const collides = reservedRects.some((reserved) => screenRectsOverlap(box, reserved));
+    if (!collides) {
+      return { ...candidate, box };
+    }
+  }
+
+  const fallbackBox = placeScreenLabelBox(measured, candidates[0], cssWidth, cssHeight);
+  return { ...candidates[0], box: fallbackBox };
+}
+
+function measureScreenLabelBox(ctx, label) {
+  ctx.save();
+  ctx.font = "12px Georgia, serif";
+  const textWidth = ctx.measureText(label).width;
+  ctx.restore();
+  const padX = 8;
+  const padY = 4;
+  const height = 22;
+  return {
+    w: Math.ceil(textWidth + padX * 2),
+    h: height,
+    padX,
+    padY
+  };
+}
+
+function placeScreenLabelBox(measured, candidate, cssWidth, cssHeight) {
+  let x = candidate.x;
+  let y = candidate.y;
+
+  if (candidate.anchorX === "center") {
+    x -= measured.w / 2;
+  } else if (candidate.anchorX === "right") {
+    x -= measured.w;
+  }
+
+  if (candidate.anchorY === "middle") {
+    y -= measured.h / 2;
+  } else if (candidate.anchorY === "bottom") {
+    y -= measured.h;
+  }
+
+  return {
+    x: clampScreenValue(x, 6, Math.max(6, cssWidth - measured.w - 6)),
+    y: clampScreenValue(y, 6, Math.max(6, cssHeight - measured.h - 6)),
+    w: measured.w,
+    h: measured.h,
+    padX: measured.padX,
+    padY: measured.padY
+  };
+}
+
+function drawDimensionLabelBubble(ctx, box, label, style) {
+  ctx.save();
+  ctx.fillStyle = style.fillStyle;
+  ctx.strokeStyle = style.strokeStyle;
+  ctx.lineWidth = 1;
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+  ctx.strokeRect(box.x, box.y, box.w, box.h);
+
+  ctx.fillStyle = style.textColor;
+  ctx.font = "12px Georgia, serif";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, box.x + box.padX, box.y + box.h / 2);
+  ctx.restore();
+}
+
+function drawDimensionLeaderLine(ctx, line) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(31, 31, 31, 0.55)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(line.x0, line.y0);
+  ctx.lineTo(line.x1, line.y1);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function screenRectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function clampScreenValue(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function formatBackgroundImageStatus(backgroundImageState) {

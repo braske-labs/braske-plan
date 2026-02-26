@@ -229,3 +229,24 @@ This harness is dependency-free and runs in the browser because local Node is cu
    - readouts show a safe `none` state
 8. Reload the page after autosave:
    - dimensions still render correctly after reopening (with saved scale if previously calibrated)
+
+## T-0015 manual smoke check (on-canvas selected-rectangle dimension labels)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Ensure at least one rectangle exists and click it to select.
+3. Confirm on-canvas labels appear near the selected rectangle:
+   - width label (`W ...`)
+   - height label (`H ...`)
+4. Before scale calibration (or after clearing scale in a fresh plan):
+   - labels show explicit world-unit fallback (`wu`)
+   - no crashes / no `NaN`
+5. After scale calibration:
+   - labels show meters/cm formatting
+   - labels update live while dragging and resizing the selected rectangle
+6. Pan and zoom around:
+   - labels remain legible (screen-space text size)
+   - labels reposition sensibly around the selected rectangle
+   - interactions (drag/resize/pan) still work normally
+7. Hover near top-right while a rectangle is selected:
+   - hover tooltip still appears
+   - labels do not hide critical UI readouts in a broken way
