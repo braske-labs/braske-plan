@@ -161,6 +161,10 @@ body {
   cursor: grabbing;
 }
 
+.canvas-shell[data-pan-mode="draggingRect"] canvas {
+  cursor: grabbing;
+}
+
 .canvas-overlay {
   position: absolute;
   left: 12px;

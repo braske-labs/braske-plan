@@ -1,4 +1,9 @@
 import { screenToWorld, worldToScreen } from "./geometry/coordinates.js";
+import {
+  computeRectangleDragOffset,
+  computeRectanglePositionFromPointer,
+  hitTestRectangles
+} from "./geometry/rectangles.js";
 import { createInitialEditorState } from "./state/editor-ui.js";
 import { createEmptyPlan } from "./state/plan.js";
 import { createEditorSessionStore } from "./state/session-store.js";
@@ -55,13 +60,41 @@ export function mountEditorRuntime(options) {
 
   const onPointerDown = (event) => {
     if (event.button !== 0 && event.button !== 1) return;
+    const point = toCanvasLocalPoint(canvas, event.clientX, event.clientY);
+    const state = store.getState();
+    const worldPoint = screenToWorld(state.editorState.camera, point.x, point.y);
+    const hit = event.button === 0
+      ? hitTestRectangles(state.plan.entities.rectangles, worldPoint)
+      : null;
+
     canvas.setPointerCapture(event.pointerId);
-    store.dispatch({
-      type: "editor/interaction/panStart",
-      pointerId: event.pointerId,
-      screenX: event.clientX,
-      screenY: event.clientY
-    });
+    if (hit) {
+      const dragOffset = computeRectangleDragOffset(hit.rectangle, worldPoint);
+
+      store.dispatch({
+        type: "editor/selection/set",
+        rectangleId: hit.rectangle.id
+      });
+      store.dispatch({
+        type: "editor/interaction/rectDragStart",
+        pointerId: event.pointerId,
+        screenX: event.clientX,
+        screenY: event.clientY,
+        rectangleId: hit.rectangle.id,
+        offsetX: dragOffset.x,
+        offsetY: dragOffset.y
+      });
+    } else {
+      if (event.button === 0) {
+        store.dispatch({ type: "editor/selection/clear" });
+      }
+      store.dispatch({
+        type: "editor/interaction/panStart",
+        pointerId: event.pointerId,
+        screenX: event.clientX,
+        screenY: event.clientY
+      });
+    }
     syncPanCursor();
   };
 
@@ -95,12 +128,39 @@ export function mountEditorRuntime(options) {
         screenX: event.clientX,
         screenY: event.clientY
       });
+      return;
+    }
+
+    if (
+      state.editorState.interaction.mode === "draggingRect" &&
+      state.editorState.interaction.pointerId === event.pointerId &&
+      state.editorState.interaction.dragRectangle
+    ) {
+      const worldPoint = screenToWorld(state.editorState.camera, point.x, point.y);
+      const dragRectangle = state.editorState.interaction.dragRectangle;
+      const nextPosition = computeRectanglePositionFromPointer(worldPoint, {
+        x: dragRectangle.offsetX,
+        y: dragRectangle.offsetY
+      });
+
+      store.dispatch({
+        type: "plan/rectangles/move",
+        rectangleId: dragRectangle.rectangleId,
+        x: nextPosition.x,
+        y: nextPosition.y
+      });
+      store.dispatch({
+        type: "editor/interaction/rectDragMove",
+        pointerId: event.pointerId,
+        screenX: event.clientX,
+        screenY: event.clientY
+      });
     }
   };
 
   const onPointerUp = (event) => {
     store.dispatch({
-      type: "editor/interaction/panEnd",
+      type: "editor/interaction/end",
       pointerId: event.pointerId
     });
     syncPanCursor();
@@ -141,6 +201,8 @@ export function mountEditorRuntime(options) {
   if (controls.resetPlanButton) {
     controls.resetPlanButton.addEventListener("click", () => {
       store.dispatch({ type: "plan/replace", plan: createEmptyPlan() });
+      store.dispatch({ type: "editor/selection/clear" });
+      store.dispatch({ type: "editor/interaction/end", pointerId: null });
     });
   }
 
@@ -185,12 +247,13 @@ export function mountEditorRuntime(options) {
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, cssWidth, cssHeight);
 
-    drawWorld(context, plan, camera, cssWidth, cssHeight, dpr);
+    drawWorld(context, plan, editorState, cssWidth, cssHeight, dpr);
     drawScreenOverlay(context, editorState, plan, pointerHover, cssWidth, cssHeight);
     updateUiReadouts(editorState, plan, timestamp);
   }
 
-  function drawWorld(ctx, plan, camera, cssWidth, cssHeight, dpr) {
+  function drawWorld(ctx, plan, editorState, cssWidth, cssHeight, dpr) {
+    const { camera, selection } = editorState;
     ctx.save();
     ctx.setTransform(
       dpr * camera.zoom,
@@ -203,7 +266,7 @@ export function mountEditorRuntime(options) {
 
     drawGrid(ctx, camera, cssWidth, cssHeight);
     drawBackgroundFrame(ctx, plan);
-    drawDebugRectangles(ctx, plan);
+    drawDebugRectangles(ctx, plan, selection.rectangleId, camera);
     drawWorldAxes(ctx, camera, cssWidth, cssHeight);
 
     ctx.restore();
@@ -235,15 +298,17 @@ export function mountEditorRuntime(options) {
     ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.strokeStyle = "rgba(0,0,0,0.15)";
     ctx.lineWidth = 1;
-    ctx.fillRect(12, 12, 220, 64);
-    ctx.strokeRect(12, 12, 220, 64);
+    ctx.fillRect(12, 12, 300, 88);
+    ctx.strokeRect(12, 12, 300, 88);
 
     ctx.fillStyle = "#1f1f1f";
     ctx.font = "12px Georgia, serif";
     ctx.textBaseline = "top";
-    ctx.fillText(`Zoom: ${camera.zoom.toFixed(2)}x`, 20, 20);
-    ctx.fillText(`Camera: ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)}`, 20, 38);
-    ctx.fillText(`Rects: ${plan.entities.rectangles.length}`, 20, 56);
+    ctx.fillText(`Zoom: ${camera.zoom.toFixed(2)}x`, 20, 18);
+    ctx.fillText(`Camera: ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)}`, 20, 34);
+    ctx.fillText(`Rects: ${plan.entities.rectangles.length}`, 20, 50);
+    ctx.fillText(`Selected: ${editorState.selection.rectangleId ?? "none"}`, 20, 66);
+    ctx.fillText(`Mode: ${editorState.interaction.mode}`, 20, 82);
     ctx.restore();
 
     if (hover.active) {
@@ -271,19 +336,20 @@ export function mountEditorRuntime(options) {
 
     if (statusElement) {
       const camera = editorState.camera;
+      const selectedId = editorState.selection.rectangleId ?? "none";
       statusElement.textContent =
-        `T-0004 runtime ready | pan: drag canvas | zoom: wheel | ` +
+        `T-0005 selection+drag | drag rect to move, drag empty to pan, wheel to zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
-        `rects ${plan.entities.rectangles.length} | ` +
+        `rects ${plan.entities.rectangles.length} | selected ${selectedId} | ` +
         `fps ~${fps.toFixed(0)}`;
     }
 
     if (overlayElement) {
       overlayElement.innerHTML =
-        `T-0004 foundation active.<br>` +
-        `Pan: drag with mouse. Zoom: mouse wheel (cursor anchored).<br>` +
-        `Buttons use reducer-style updates (reset plan/view, seed debug rectangles).`;
+        `T-0005 active.<br>` +
+        `Click rectangle to select, then drag to move. Drag empty canvas to pan.<br>` +
+        `Wheel zoom stays cursor-anchored. Buttons still dispatch reducer actions.`;
     }
   }
 
@@ -379,11 +445,12 @@ function drawBackgroundFrame(ctx, plan) {
   ctx.restore();
 }
 
-function drawDebugRectangles(ctx, plan) {
+function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
   for (const rect of plan.entities.rectangles) {
     const isWall = rect.kind === "wallRect";
     const stroke = isWall ? "#222" : "#0b6e4f";
     const fill = isWall ? "rgba(20,20,20,0.20)" : "rgba(11,110,79,0.14)";
+    const isSelected = rect.id === selectedRectangleId;
 
     ctx.save();
     ctx.fillStyle = fill;
@@ -397,6 +464,12 @@ function drawDebugRectangles(ctx, plan) {
       ctx.font = "12px Georgia, serif";
       ctx.textBaseline = "top";
       ctx.fillText(rect.label, rect.x + 6, rect.y + 6);
+    }
+
+    if (isSelected) {
+      ctx.strokeStyle = "rgba(35, 85, 235, 0.95)";
+      ctx.lineWidth = 2.5 / camera.zoom;
+      ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
     }
 
     ctx.restore();

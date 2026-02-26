@@ -33,6 +33,33 @@ export function planReducer(plan, action) {
     case "plan/replace":
       return stampPlan(action.plan);
 
+    case "plan/rectangles/move": {
+      const rectangleIndex = plan.entities.rectangles.findIndex((rectangle) => rectangle.id === action.rectangleId);
+      if (rectangleIndex < 0) {
+        return plan;
+      }
+
+      const current = plan.entities.rectangles[rectangleIndex];
+      if (current.x === action.x && current.y === action.y) {
+        return plan;
+      }
+
+      const nextRectangles = plan.entities.rectangles.slice();
+      nextRectangles[rectangleIndex] = {
+        ...current,
+        x: action.x,
+        y: action.y
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          rectangles: nextRectangles
+        }
+      });
+    }
+
     case "plan/debugSeedRectangles": {
       if (plan.entities.rectangles.length > 0 && !action.force) {
         return plan;

@@ -17,16 +17,42 @@ export function createInitialEditorState() {
       dpr: 1
     },
     camera: { ...DEFAULT_CAMERA },
+    selection: {
+      rectangleId: null
+    },
     interaction: {
       mode: "idle",
       pointerId: null,
-      lastScreen: null
+      lastScreen: null,
+      dragRectangle: null
     }
   };
 }
 
 export function editorUiReducer(state, action) {
   switch (action.type) {
+    case "editor/selection/set":
+      if (state.selection.rectangleId === action.rectangleId) {
+        return state;
+      }
+      return {
+        ...state,
+        selection: {
+          rectangleId: action.rectangleId
+        }
+      };
+
+    case "editor/selection/clear":
+      if (state.selection.rectangleId == null) {
+        return state;
+      }
+      return {
+        ...state,
+        selection: {
+          rectangleId: null
+        }
+      };
+
     case "editor/viewport/set":
       return {
         ...state,
@@ -67,7 +93,8 @@ export function editorUiReducer(state, action) {
         interaction: {
           mode: "panning",
           pointerId: action.pointerId,
-          lastScreen: { x: action.screenX, y: action.screenY }
+          lastScreen: { x: action.screenX, y: action.screenY },
+          dragRectangle: null
         }
       };
 
@@ -86,8 +113,38 @@ export function editorUiReducer(state, action) {
         }
       };
 
-    case "editor/interaction/panEnd":
-      if (state.interaction.pointerId !== action.pointerId) {
+    case "editor/interaction/rectDragStart":
+      return {
+        ...state,
+        interaction: {
+          mode: "draggingRect",
+          pointerId: action.pointerId,
+          lastScreen: { x: action.screenX, y: action.screenY },
+          dragRectangle: {
+            rectangleId: action.rectangleId,
+            offsetX: action.offsetX,
+            offsetY: action.offsetY
+          }
+        }
+      };
+
+    case "editor/interaction/rectDragMove":
+      if (
+        state.interaction.mode !== "draggingRect" ||
+        state.interaction.pointerId !== action.pointerId
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        interaction: {
+          ...state.interaction,
+          lastScreen: { x: action.screenX, y: action.screenY }
+        }
+      };
+
+    case "editor/interaction/end":
+      if (action.pointerId != null && state.interaction.pointerId !== action.pointerId) {
         return state;
       }
       return {
@@ -95,7 +152,8 @@ export function editorUiReducer(state, action) {
         interaction: {
           mode: "idle",
           pointerId: null,
-          lastScreen: null
+          lastScreen: null,
+          dragRectangle: null
         }
       };
 

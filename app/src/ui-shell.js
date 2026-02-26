@@ -40,8 +40,8 @@ function buildShell() {
         <h1>Apartment Planner MVP</h1>
       </div>
       <p>
-        T-0004 runtime foundation. This slice adds the canvas runtime, camera controls, render loop,
-        and reducer-based state shells for plan + editor UI.
+        T-0005 adds the first real rectangle interaction slice on top of the runtime foundation:
+        topmost hit-test selection and rectangle drag on Plan Model v0.
       </p>
       <div class="meta-row" aria-label="Sprint metadata">
         <div class="pill">
@@ -50,13 +50,13 @@ function buildShell() {
         </div>
         <div class="pill">
           <strong>Ticket</strong>
-          T-0004
+          T-0005
         </div>
       </div>
       <ol class="checklist" aria-label="Immediate next steps">
-        <li>Runtime foundation (this ticket): camera + render + state shell.</li>
-        <li>T-0005: rectangle selection and drag on Plan Model v0.</li>
-        <li>T-0006: rectangle create + resize (no snapping yet).</li>
+        <li>This ticket: topmost rectangle select + drag without snapping.</li>
+        <li>Drag empty canvas to pan; wheel zoom stays cursor-anchored.</li>
+        <li>Next: T-0006 rectangle create + resize (no snapping yet).</li>
       </ol>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">
