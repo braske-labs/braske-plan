@@ -18,6 +18,19 @@ export function createEditorShell(root) {
   const toolDrawRectButton = root.querySelector("[data-editor-action='tool-draw-rect']");
   const toolCalibrateScaleButton = root.querySelector("[data-editor-action='tool-calibrate-scale']");
   const deleteSelectedButton = root.querySelector("[data-editor-action='rect-delete']");
+  const wallStatusElement = root.querySelector("[data-wall-status]");
+  const wallTopValueElement = root.querySelector("[data-wall-value='top']");
+  const wallRightValueElement = root.querySelector("[data-wall-value='right']");
+  const wallBottomValueElement = root.querySelector("[data-wall-value='bottom']");
+  const wallLeftValueElement = root.querySelector("[data-wall-value='left']");
+  const wallTopDecreaseButton = root.querySelector("[data-editor-action='wall-top-dec']");
+  const wallTopIncreaseButton = root.querySelector("[data-editor-action='wall-top-inc']");
+  const wallRightDecreaseButton = root.querySelector("[data-editor-action='wall-right-dec']");
+  const wallRightIncreaseButton = root.querySelector("[data-editor-action='wall-right-inc']");
+  const wallBottomDecreaseButton = root.querySelector("[data-editor-action='wall-bottom-dec']");
+  const wallBottomIncreaseButton = root.querySelector("[data-editor-action='wall-bottom-inc']");
+  const wallLeftDecreaseButton = root.querySelector("[data-editor-action='wall-left-dec']");
+  const wallLeftIncreaseButton = root.querySelector("[data-editor-action='wall-left-inc']");
   const exportJsonButton = root.querySelector("[data-editor-action='plan-export-json']");
   const importJsonButton = root.querySelector("[data-editor-action='plan-import-json']");
   const importJsonFileInput = root.querySelector("[data-editor-file-input='plan-import']");
@@ -47,6 +60,19 @@ export function createEditorShell(root) {
       toolDrawRectButton,
       toolCalibrateScaleButton,
       deleteSelectedButton,
+      wallStatusElement,
+      wallTopValueElement,
+      wallRightValueElement,
+      wallBottomValueElement,
+      wallLeftValueElement,
+      wallTopDecreaseButton,
+      wallTopIncreaseButton,
+      wallRightDecreaseButton,
+      wallRightIncreaseButton,
+      wallBottomDecreaseButton,
+      wallBottomIncreaseButton,
+      wallLeftDecreaseButton,
+      wallLeftIncreaseButton,
       exportJsonButton,
       importJsonButton,
       importJsonFileInput,
@@ -74,22 +100,22 @@ function buildShell() {
         <h1>Apartment Planner MVP</h1>
       </div>
       <p>
-        T-0017 adds local JSON export/import so plans can be backed up and reloaded outside autosave.
+        T-0018 adds per-side wall thickness editing controls on the selected rectangle (top/right/bottom/left).
       </p>
       <div class="meta-row" aria-label="Sprint metadata">
         <div class="pill">
           <strong>Current Sprint</strong>
-          S004
+          S005
         </div>
         <div class="pill">
           <strong>Ticket</strong>
-          T-0017
+          T-0018
         </div>
       </div>
       <ol class="checklist" aria-label="Immediate next steps">
-        <li>This ticket: export current plan JSON and import a saved plan JSON file.</li>
-        <li>Imported files should use the same migration/normalization path as local autosave load.</li>
-        <li>Next: deeper validation or S004 closeout.</li>
+        <li>This ticket: edit wall thickness for selected rectangle sides independently.</li>
+        <li>Persist wallCm values in plan state without disrupting drawing interactions.</li>
+        <li>Next: derive perimeter segments from authored geometry.</li>
       </ol>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">
@@ -98,6 +124,38 @@ function buildShell() {
         <button type="button" data-editor-action="tool-draw-rect" aria-pressed="false">Draw Rect</button>
         <button type="button" data-editor-action="tool-calibrate-scale" aria-pressed="false">Calibrate Scale</button>
         <button type="button" data-editor-action="rect-delete" disabled>Delete Rect</button>
+        <details class="toolbar-disclosure wall-controls" open>
+          <summary>
+            <span class="toolbar-disclosure-title">Wall Cm</span>
+            <span class="toolbar-inline-status" data-wall-status>No selection</span>
+          </summary>
+          <div class="toolbar-disclosure-panel wall-controls-panel">
+            <div class="wall-row">
+              <span class="wall-side">Top</span>
+              <button type="button" data-editor-action="wall-top-dec">-</button>
+              <span class="wall-value" data-wall-value="top">-</span>
+              <button type="button" data-editor-action="wall-top-inc">+</button>
+            </div>
+            <div class="wall-row">
+              <span class="wall-side">Right</span>
+              <button type="button" data-editor-action="wall-right-dec">-</button>
+              <span class="wall-value" data-wall-value="right">-</span>
+              <button type="button" data-editor-action="wall-right-inc">+</button>
+            </div>
+            <div class="wall-row">
+              <span class="wall-side">Bottom</span>
+              <button type="button" data-editor-action="wall-bottom-dec">-</button>
+              <span class="wall-value" data-wall-value="bottom">-</span>
+              <button type="button" data-editor-action="wall-bottom-inc">+</button>
+            </div>
+            <div class="wall-row">
+              <span class="wall-side">Left</span>
+              <button type="button" data-editor-action="wall-left-dec">-</button>
+              <span class="wall-value" data-wall-value="left">-</span>
+              <button type="button" data-editor-action="wall-left-inc">+</button>
+            </div>
+          </div>
+        </details>
         <button type="button" data-editor-action="plan-export-json">Export JSON</button>
         <button type="button" data-editor-action="plan-import-json">Import JSON</button>
         <input type="file" accept="application/json,.json" data-editor-file-input="plan-import" hidden>

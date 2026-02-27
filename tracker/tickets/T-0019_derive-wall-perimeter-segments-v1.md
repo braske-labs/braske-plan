@@ -7,12 +7,13 @@ Status history (append-only):
 - 2026-02-26: OPEN
 
 ## Goal
-Compute a first explainable derived perimeter geometry from authored rectangles (including per-side wall thickness metadata where relevant), so perimeter/baseboard calculations can start.
+Compute explainable derived wall/perimeter geometry from room+wall shells and introduce shared-boundary contact semantics so connected rooms behave like one plan, not floating rectangles.
 
 ## Acceptance criteria
-- [ ] Derived geometry helper(s) produce a segment list / perimeter representation from current authored rectangles.
+- [ ] Derived geometry helper(s) produce wall shell and segment outputs from authored room interiors + `wallCm`.
 - [ ] Output is deterministic and debuggable (not just a single number).
-- [ ] Pure helper tests cover at least simple and adjacent-rectangle scenarios.
+- [ ] Contact-based shared-boundary detect/prune works for adjacent room shells.
+- [ ] Pure helper tests cover simple, adjacent, and detached scenarios.
 - [ ] Derived geometry is separated from authoring primitives (no direct mutation of plan rectangles).
 - [ ] Current editor interactions remain responsive when derived geometry recomputes.
 
@@ -24,6 +25,9 @@ Scope limits:
 - no room-type exclusions yet
 - no pricing logic
 - no persistent magnetic-link solver dependencies
+
+Reference behavior/spec:
+- `docs/wall_piece_and_shared_boundary_spec.md`
 
 Prefer an intermediate segment model that can later support:
 - exclusions (openings)

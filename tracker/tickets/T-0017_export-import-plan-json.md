@@ -6,16 +6,17 @@ Owner: simonas
 Status history (append-only):
 - 2026-02-26: OPEN
 - 2026-02-26: IN_PROGRESS
+- 2026-02-26: DONE
 
 ## Goal
 Allow the user to export the current plan JSON and import a saved plan file, enabling manual backups and sharing before report/export UX exists.
 
 ## Acceptance criteria
-- [ ] User can export current `plan` JSON to a local file.
-- [ ] User can import a previously exported JSON file and replace the current plan.
-- [ ] Imported plan goes through the existing plan migration/normalization path.
-- [ ] Autosave and current editor interactions continue to work after import.
-- [ ] Invalid JSON / invalid plan shape failures are shown safely (no crash).
+- [x] User can export current `plan` JSON to a local file.
+- [x] User can import a previously exported JSON file and replace the current plan.
+- [x] Imported plan goes through the existing plan migration/normalization path.
+- [x] Autosave and current editor interactions continue to work after import.
+- [x] Invalid JSON / invalid plan shape failures are shown safely (no crash).
 
 ## Notes / formulation
 This is a local-file round-trip feature only.
@@ -40,3 +41,4 @@ Scope limits:
 ## Log (append-only)
 - 2026-02-26 19:xx: Ticket created as S004 stretch backlog.
 - 2026-02-26 20:xx: Started implementation. Added local JSON export/import round-trip through existing plan migration path; pending manual verification.
+- 2026-02-26 20:xx: User manually verified JSON export/import round-trip and invalid-file safety handling. Ticket marked DONE.

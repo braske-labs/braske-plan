@@ -7,11 +7,16 @@ export function pointInRectangle(point, rectangle) {
   );
 }
 
-export function hitTestRectangles(rectangles, point) {
+export function hitTestRectangles(rectangles, point, options = {}) {
+  const getBounds = typeof options.getBounds === "function" ? options.getBounds : null;
   for (let index = rectangles.length - 1; index >= 0; index--) {
     const rectangle = rectangles[index];
-    if (pointInRectangle(point, rectangle)) {
-      return { rectangle, index };
+    const bounds = getBounds ? getBounds(rectangle) : rectangle;
+    if (!bounds) {
+      continue;
+    }
+    if (pointInRectangle(point, bounds)) {
+      return { rectangle, index, bounds };
     }
   }
   return null;

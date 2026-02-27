@@ -77,3 +77,4 @@ Goal: compute baseboards and show an explainable estimate.
 ## Priority note (2026-02-26)
 - Prioritize wall-thickness authoring + derived perimeter geometry before persistent magnetic-link behavior.
 - Rationale: perimeter/baseboard feedback delivers value sooner, while sticky links can be deferred without blocking geometry derivation.
+- Wall behavior spec reference: `docs/wall_piece_and_shared_boundary_spec.md` (room+wall shells, shared-boundary contact semantics, no passive `wallCm`).

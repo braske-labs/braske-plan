@@ -287,3 +287,25 @@ This harness is dependency-free and runs in the browser because local Node is cu
 7. Invalid file safety check:
    - try importing a non-JSON or malformed JSON file
    - app stays responsive and shows a safe file I/O error message (no crash)
+
+## T-0018 manual smoke check (per-side wall thickness controls)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Ensure at least one rectangle exists and select it.
+3. Open `Wall Cm` controls in the toolbar:
+   - current `Top/Right/Bottom/Left` values are shown
+   - summary status shows side values for selected rectangle
+4. Use `+` / `-` on each side:
+   - values update immediately in the wall controls
+   - status/overlay reflects updated wall values
+   - visible wall shell thickness changes outward around the room interior
+5. Clear selection (click empty area):
+   - wall controls become disabled
+   - safe `No selection` / `-` values are shown
+6. Re-select rectangle and verify wall values persisted.
+7. Confirm core interactions still work normally after wall edits:
+   - draw/select/drag/resize/snapping
+   - clicking a wall band still selects/drags the room piece
+   - snapping uses shell contact (outer wall edges), not interior-only edges
+   - autosave/reload
+8. Optional: open `http://127.0.0.1:4173/tests/` and confirm wall-shell/snapping tests pass.

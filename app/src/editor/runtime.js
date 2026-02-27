@@ -18,6 +18,14 @@ import {
 import { snapDraggedRectangle, snapResizedRectangle } from "./geometry/snapping.js";
 import { validateBasicPlanGeometry } from "./geometry/validation.js";
 import {
+  deriveRectangleShellGeometry,
+  getRectangleOuterRect,
+  getRectangleWallWorld,
+  interiorRectToOuterRect,
+  normalizeWallCm,
+  outerRectToInteriorRect
+} from "./geometry/wall-shell.js";
+import {
   createPlanAutosaveController,
   loadPersistedPlan,
   parseImportedPlanJsonText
@@ -34,6 +42,7 @@ const BACKGROUND_SCALE_UP = 1.05;
 const BACKGROUND_SCALE_DOWN = 1 / BACKGROUND_SCALE_UP;
 const SNAP_TOLERANCE_PX = 10;
 const MIN_CALIBRATION_LINE_WORLD = 8;
+const WALL_CM_STEP = 1;
 
 export function mountEditorRuntime(options) {
   const { canvas, statusElement, overlayElement, shellElement, controls = {} } = options;
@@ -194,7 +203,9 @@ export function mountEditorRuntime(options) {
       }
     }
 
-    const hit = hitTestRectangles(plan.entities.rectangles, worldPoint);
+    const hit = hitTestRectangles(plan.entities.rectangles, worldPoint, {
+      getBounds: (rectangle) => getRectangleHitBounds(rectangle, plan.scale)
+    });
     if (hit) {
       const dragOffset = computeRectangleDragOffset(hit.rectangle, worldPoint);
 
@@ -280,18 +291,31 @@ export function mountEditorRuntime(options) {
             h: draggedRectangle.h
           }
         : { x: nextPosition.x, y: nextPosition.y, w: 0, h: 0 };
-      const snapResult = draggedRectangle
-        ? snapDraggedRectangle(proposedRectangle, state.plan.entities.rectangles, {
-            excludeRectangleId: dragRectangle.rectangleId,
-            toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom
-          })
-        : { rectangle: proposedRectangle };
+      let snappedRectangle = proposedRectangle;
+      if (draggedRectangle) {
+        const snapWallWorld = getRectangleWallWorld(draggedRectangle, state.plan.scale?.metersPerWorldUnit);
+        const proposedShell = interiorRectToOuterRect(proposedRectangle, snapWallWorld);
+        if (proposedShell) {
+          const snapResult = snapDraggedRectangle(
+            proposedShell,
+            buildPlanShellRectangles(state.plan),
+            {
+              excludeRectangleId: dragRectangle.rectangleId,
+              toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom
+            }
+          );
+          const snappedInterior = outerRectToInteriorRect(snapResult.rectangle, snapWallWorld);
+          if (snappedInterior) {
+            snappedRectangle = snappedInterior;
+          }
+        }
+      }
 
       store.dispatch({
         type: "plan/rectangles/move",
         rectangleId: dragRectangle.rectangleId,
-        x: snapResult.rectangle.x,
-        y: snapResult.rectangle.y
+        x: snappedRectangle.x,
+        y: snappedRectangle.y
       });
       store.dispatch({
         type: "editor/interaction/rectDragMove",
@@ -349,16 +373,35 @@ export function mountEditorRuntime(options) {
         worldPoint,
         { minSize: MIN_RECT_SIZE }
       );
-      const snappedRect = snapResizedRectangle(
-        nextRect,
-        resizeState.handleName,
-        state.plan.entities.rectangles,
-        {
-          excludeRectangleId: resizeState.rectangleId,
-          toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom,
-          minSize: MIN_RECT_SIZE
+      const resizeRectangleEntity = state.plan.entities.rectangles.find(
+        (rectangle) => rectangle.id === resizeState.rectangleId
+      );
+      let snappedRect = nextRect;
+      if (resizeRectangleEntity) {
+        const wallWorld = getRectangleWallWorld(resizeRectangleEntity, state.plan.scale?.metersPerWorldUnit);
+        const nextShellRect = interiorRectToOuterRect(nextRect, wallWorld);
+        if (nextShellRect) {
+          const outerMinSize = MIN_RECT_SIZE + Math.max(
+            wallWorld.left + wallWorld.right,
+            wallWorld.top + wallWorld.bottom
+          );
+          const snappedShellRect = snapResizedRectangle(
+            nextShellRect,
+            resizeState.handleName,
+            buildPlanShellRectangles(state.plan),
+            {
+              excludeRectangleId: resizeState.rectangleId,
+              toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom,
+              minSize: outerMinSize
+            }
+          ).rectangle;
+
+          const snappedInteriorRect = outerRectToInteriorRect(snappedShellRect, wallWorld);
+          if (snappedInteriorRect) {
+            snappedRect = snappedInteriorRect;
+          }
         }
-      ).rectangle;
+      }
 
       store.dispatch({
         type: "plan/rectangles/setGeometry",
@@ -485,6 +528,47 @@ export function mountEditorRuntime(options) {
   if (controls.deleteSelectedButton) {
     controls.deleteSelectedButton.addEventListener("click", () => {
       deleteSelectedRectangle();
+    });
+  }
+
+  if (controls.wallTopDecreaseButton) {
+    controls.wallTopDecreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("top", -WALL_CM_STEP);
+    });
+  }
+  if (controls.wallTopIncreaseButton) {
+    controls.wallTopIncreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("top", WALL_CM_STEP);
+    });
+  }
+  if (controls.wallRightDecreaseButton) {
+    controls.wallRightDecreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("right", -WALL_CM_STEP);
+    });
+  }
+  if (controls.wallRightIncreaseButton) {
+    controls.wallRightIncreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("right", WALL_CM_STEP);
+    });
+  }
+  if (controls.wallBottomDecreaseButton) {
+    controls.wallBottomDecreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("bottom", -WALL_CM_STEP);
+    });
+  }
+  if (controls.wallBottomIncreaseButton) {
+    controls.wallBottomIncreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("bottom", WALL_CM_STEP);
+    });
+  }
+  if (controls.wallLeftDecreaseButton) {
+    controls.wallLeftDecreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("left", -WALL_CM_STEP);
+    });
+  }
+  if (controls.wallLeftIncreaseButton) {
+    controls.wallLeftIncreaseButton.addEventListener("click", () => {
+      adjustSelectedRectangleWallCm("left", WALL_CM_STEP);
     });
   }
 
@@ -768,31 +852,34 @@ export function mountEditorRuntime(options) {
 
     if (statusElement) {
       const camera = editorState.camera;
+      const selectedRectangle = getSelectedRectangle(plan, editorState);
       const selectedId = editorState.selection.rectangleId ?? "none";
       const tool = editorState.tool;
       const autosaveLabel = formatAutosaveStatusShort(persistenceStatus);
       const backgroundLabel = formatBackgroundShort(plan.background, backgroundImageState);
       const scaleLabel = formatScaleShort(plan.scale);
-      const selectedDimsLabel = formatSelectedRectangleDimensionsStatus(getSelectedRectangle(plan, editorState), plan.scale);
+      const selectedDimsLabel = formatSelectedRectangleDimensionsStatus(selectedRectangle, plan.scale);
+      const selectedWallLabel = formatSelectedRectangleWallCmStatus(selectedRectangle);
       const validationLabel = formatValidationSummaryStatus(validation);
       const fileIoLabel = formatFileTransferStatusShort(fileTransferStatus);
       statusElement.textContent =
-        `T-0017 file io | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
+        `T-0018 wall cm | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
-        `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedDimsLabel ? ` (${selectedDimsLabel})` : ""} | ` +
+        `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedDimsLabel ? ` (${selectedDimsLabel})` : ""}${selectedWallLabel ? ` [${selectedWallLabel}]` : ""} | ` +
         `fps ~${fps.toFixed(0)}`;
     }
 
     if (overlayElement) {
       const selectedRectangle = getSelectedRectangle(plan, editorState);
       overlayElement.innerHTML =
-        `T-0017 active (local JSON export/import + validation + dimension labels/readouts). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `T-0018 active (per-side wall thickness controls + prior editor slices). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
         `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
         `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
         `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
         `${formatScaleDetail(plan.scale)}. Use Calibrate Scale tool to draw a reference line and enter meters.<br>` +
         `Selected dimensions: ${formatSelectedRectangleDimensionsOverlay(selectedRectangle, plan.scale)}.<br>` +
+        `Selected wall cm: ${formatSelectedRectangleWallCmOverlay(selectedRectangle)}.<br>` +
         `Validation: ${formatValidationDetail(validation)}.<br>` +
         `File I/O: ${formatFileTransferStatusDetail(fileTransferStatus)}.<br>` +
         `Drag/resize snaps within ${SNAP_TOLERANCE_PX}px. Delete uses toolbar button or Delete/Backspace.<br>` +
@@ -829,6 +916,7 @@ export function mountEditorRuntime(options) {
     if (controls.deleteSelectedButton) {
       controls.deleteSelectedButton.disabled = state.selection.rectangleId == null;
     }
+    syncWallControls(snapshot.plan, state);
     if (controls.backgroundStatusElement) {
       controls.backgroundStatusElement.textContent = formatBackgroundShort(snapshot.plan.background, backgroundImageState);
     }
@@ -969,6 +1057,73 @@ export function mountEditorRuntime(options) {
     store.dispatch({ type: "editor/interaction/end", pointerId: null });
     syncEditorChrome();
     return true;
+  }
+
+  function adjustSelectedRectangleWallCm(side, delta) {
+    const snapshot = store.getState();
+    const selectedRectangle = getSelectedRectangle(snapshot.plan, snapshot.editorState);
+    if (!selectedRectangle) {
+      return false;
+    }
+
+    const wallCm = normalizeWallCmForUi(selectedRectangle.wallCm);
+    const currentValue = wallCm[side];
+    if (!Number.isFinite(currentValue)) {
+      return false;
+    }
+
+    const nextValue = Math.max(0, currentValue + delta);
+    if (nextValue === currentValue) {
+      return false;
+    }
+
+    store.dispatch({
+      type: "plan/rectangles/setWallCm",
+      rectangleId: selectedRectangle.id,
+      side,
+      value: nextValue
+    });
+    return true;
+  }
+
+  function syncWallControls(plan, editorState) {
+    const selectedRectangle = getSelectedRectangle(plan, editorState);
+    const wallCm = normalizeWallCmForUi(selectedRectangle?.wallCm);
+    const hasSelection = Boolean(selectedRectangle);
+
+    if (controls.wallStatusElement) {
+      controls.wallStatusElement.textContent = hasSelection
+        ? `T ${wallCm.top} R ${wallCm.right} B ${wallCm.bottom} L ${wallCm.left}`
+        : "No selection";
+    }
+    if (controls.wallTopValueElement) {
+      controls.wallTopValueElement.textContent = hasSelection ? `${wallCm.top}` : "-";
+    }
+    if (controls.wallRightValueElement) {
+      controls.wallRightValueElement.textContent = hasSelection ? `${wallCm.right}` : "-";
+    }
+    if (controls.wallBottomValueElement) {
+      controls.wallBottomValueElement.textContent = hasSelection ? `${wallCm.bottom}` : "-";
+    }
+    if (controls.wallLeftValueElement) {
+      controls.wallLeftValueElement.textContent = hasSelection ? `${wallCm.left}` : "-";
+    }
+
+    const buttons = [
+      controls.wallTopDecreaseButton,
+      controls.wallTopIncreaseButton,
+      controls.wallRightDecreaseButton,
+      controls.wallRightIncreaseButton,
+      controls.wallBottomDecreaseButton,
+      controls.wallBottomIncreaseButton,
+      controls.wallLeftDecreaseButton,
+      controls.wallLeftIncreaseButton
+    ];
+    for (const button of buttons) {
+      if (button) {
+        button.disabled = !hasSelection;
+      }
+    }
   }
 
   function commitScaleCalibrationDraft(draft, currentScale) {
@@ -1202,6 +1357,22 @@ function formatSelectedRectangleDimensionsOverlay(rectangle, scale) {
   return `${worldLabel}; ${metricLabel}`;
 }
 
+function formatSelectedRectangleWallCmStatus(rectangle) {
+  if (!rectangle) {
+    return "";
+  }
+  const wallCm = normalizeWallCmForUi(rectangle.wallCm);
+  return `T${wallCm.top} R${wallCm.right} B${wallCm.bottom} L${wallCm.left}cm`;
+}
+
+function formatSelectedRectangleWallCmOverlay(rectangle) {
+  if (!rectangle) {
+    return "none";
+  }
+  const wallCm = normalizeWallCmForUi(rectangle.wallCm);
+  return `top ${wallCm.top}cm, right ${wallCm.right}cm, bottom ${wallCm.bottom}cm, left ${wallCm.left}cm`;
+}
+
 function formatValidationSummaryDebug(validation) {
   if (!validation || validation.status === "ok") {
     return "OK";
@@ -1286,6 +1457,23 @@ function escapeHtmlForOverlay(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function normalizeWallCmForUi(rawWallCm) {
+  const wallCm = normalizeWallCm(rawWallCm);
+  return {
+    top: normalizeWallSideValue(wallCm.top),
+    right: normalizeWallSideValue(wallCm.right),
+    bottom: normalizeWallSideValue(wallCm.bottom),
+    left: normalizeWallSideValue(wallCm.left)
+  };
+}
+
+function normalizeWallSideValue(value) {
+  if (!Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+  return Math.round(value * 10) / 10;
 }
 
 function drawSelectedRectangleDimensionLabels(ctx, editorState, plan, hover, cssWidth, cssHeight) {
@@ -1589,13 +1777,31 @@ function getSelectedRectangle(plan, editorState) {
 }
 
 function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
+  const metersPerWorldUnit = plan?.scale?.metersPerWorldUnit;
+
   for (const rect of plan.entities.rectangles) {
     const isWall = rect.kind === "wallRect";
     const stroke = isWall ? "#222" : "#0b6e4f";
     const fill = isWall ? "rgba(20,20,20,0.20)" : "rgba(11,110,79,0.14)";
     const isSelected = rect.id === selectedRectangleId;
+    const shell = deriveRectangleShellGeometry(rect, metersPerWorldUnit);
+    const outerRect = shell?.outerRect ?? rect;
+    const wallBands = shell?.wallBands ?? null;
 
     ctx.save();
+    if (wallBands && !isWall) {
+      ctx.fillStyle = "rgba(15, 42, 34, 0.22)";
+      for (const band of Object.values(wallBands)) {
+        if (!band) {
+          continue;
+        }
+        ctx.fillRect(band.x, band.y, band.w, band.h);
+      }
+      ctx.strokeStyle = "rgba(15, 42, 34, 0.45)";
+      ctx.lineWidth = 1 / camera.zoom;
+      ctx.strokeRect(outerRect.x, outerRect.y, outerRect.w, outerRect.h);
+    }
+
     ctx.fillStyle = fill;
     ctx.strokeStyle = stroke;
     ctx.lineWidth = isWall ? 2 : 1.5;
@@ -1612,11 +1818,36 @@ function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
     if (isSelected) {
       ctx.strokeStyle = "rgba(35, 85, 235, 0.95)";
       ctx.lineWidth = 2.5 / camera.zoom;
-      ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+      ctx.strokeRect(outerRect.x, outerRect.y, outerRect.w, outerRect.h);
     }
 
     ctx.restore();
   }
+}
+
+function buildPlanShellRectangles(plan) {
+  const metersPerWorldUnit = plan?.scale?.metersPerWorldUnit;
+  const shellRectangles = [];
+
+  for (const rectangle of plan.entities.rectangles) {
+    const outerRect = getRectangleOuterRect(rectangle, metersPerWorldUnit);
+    if (!outerRect) {
+      continue;
+    }
+    shellRectangles.push({
+      id: rectangle.id,
+      x: outerRect.x,
+      y: outerRect.y,
+      w: outerRect.w,
+      h: outerRect.h
+    });
+  }
+
+  return shellRectangles;
+}
+
+function getRectangleHitBounds(rectangle, scale) {
+  return getRectangleOuterRect(rectangle, scale?.metersPerWorldUnit);
 }
 
 function drawSelectedResizeHandles(ctx, plan, editorState) {

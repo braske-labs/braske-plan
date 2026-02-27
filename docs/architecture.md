@@ -101,6 +101,10 @@ Reference:
 - Orthogonal (90°) geometry only.
 - “Complete plan” means it passes a small set of checks (to be defined in the vision doc).
 - Room typing must work even when a room consists of multiple rectangles (merged logical room).
+- Wall thickness must be geometry-active (render/snap/adjacency/derivation), not passive display metadata.
+
+Wall behavior reference:
+- `docs/wall_piece_and_shared_boundary_spec.md`
 
 ## Performance notes
 - Separate “authoring primitives” from “derived geometry”.

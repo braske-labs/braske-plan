@@ -1,4 +1,9 @@
 import { snapDraggedRectangle, snapResizedRectangle } from "../../src/editor/geometry/snapping.js";
+import {
+  getRectangleWallWorld,
+  interiorRectToOuterRect,
+  outerRectToInteriorRect
+} from "../../src/editor/geometry/wall-shell.js";
 import { assertClose, assertEqual, test } from "../test-runner.js";
 
 function rectangle(id, x, y, w, h) {
@@ -103,4 +108,50 @@ test("resize snapping composes contact + top-top alignment for corner resize", (
   assertClose(result.rectangle.h, 60);
   assertEqual(result.snap.x?.target?.rectangleId, "rect_target");
   assertEqual(result.snap.y?.target?.rectangleId, "rect_target");
+});
+
+test("drag snapping supports shell-contact when interior rectangles are offset by wall thickness", () => {
+  const metersPerWorldUnit = 0.01;
+  const targetInterior = {
+    id: "rect_target",
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    wallCm: { top: 0, right: 10, bottom: 0, left: 0 }
+  };
+  const movingInterior = {
+    id: "rect_moving",
+    x: 121,
+    y: 10,
+    w: 60,
+    h: 60,
+    wallCm: { top: 0, right: 0, bottom: 0, left: 5 }
+  };
+
+  const targetShell = interiorRectToOuterRect(
+    targetInterior,
+    getRectangleWallWorld(targetInterior, metersPerWorldUnit)
+  );
+  const movingWallWorld = getRectangleWallWorld(movingInterior, metersPerWorldUnit);
+  const movingShell = interiorRectToOuterRect(movingInterior, movingWallWorld);
+
+  const result = snapDraggedRectangle(
+    movingShell,
+    [
+      {
+        id: targetInterior.id,
+        x: targetShell.x,
+        y: targetShell.y,
+        w: targetShell.w,
+        h: targetShell.h
+      }
+    ],
+    { toleranceWorld: 8 }
+  );
+
+  const snappedInterior = outerRectToInteriorRect(result.rectangle, movingWallWorld);
+  assertClose(snappedInterior.x, 115);
+  assertClose(snappedInterior.y, 10);
+  assertEqual(result.snap.x?.target?.rectangleId, "rect_target");
 });

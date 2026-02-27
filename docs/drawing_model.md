@@ -8,6 +8,8 @@ This doc captures the current “shape authoring” direction suggested by the p
   - a **room region** (interior filled area), or
   - a **wall segment** (long/narrow rectangles), toggled via an “is wall” switch.
 - Rectangles can have per-side wall thickness values (useful for “outer rect” vs “inner rect”).
+- Required semantics update: wall thickness is not decorative metadata; it must participate in shell geometry, contact behavior, and perimeter derivation.
+- Detailed spec: `docs/wall_piece_and_shared_boundary_spec.md`.
 
 ## Snapping / magnetic behavior
 Goal: make users draw *clean* geometry so we can avoid fancy early algorithms.

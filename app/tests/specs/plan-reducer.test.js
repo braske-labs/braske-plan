@@ -49,3 +49,56 @@ test("plan reducer delete removes rectangle and cleans rooms/openings references
     rectangleIds: ["rect_b"]
   });
 });
+
+test("plan reducer setWallCm updates selected rectangle side value", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        { id: "rect_a", kind: "roomRect", x: 0, y: 0, w: 100, h: 80, wallCm: { top: 8, right: 10, bottom: 12, left: 9 }, roomId: null, label: null }
+      ]
+    }
+  };
+
+  const nextPlan = planReducer(plan, {
+    type: "plan/rectangles/setWallCm",
+    rectangleId: "rect_a",
+    side: "right",
+    value: 15
+  });
+
+  assert(nextPlan !== plan, "setWallCm should produce a new plan object.");
+  assertEqual(nextPlan.entities.rectangles[0].wallCm.right, 15);
+  assertEqual(nextPlan.entities.rectangles[0].wallCm.top, 8);
+});
+
+test("plan reducer setWallCm no-ops for missing rectangle or invalid side", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        { id: "rect_a", kind: "roomRect", x: 0, y: 0, w: 100, h: 80, wallCm: { top: 8, right: 10, bottom: 12, left: 9 }, roomId: null, label: null }
+      ]
+    }
+  };
+
+  const missingRect = planReducer(plan, {
+    type: "plan/rectangles/setWallCm",
+    rectangleId: "rect_missing",
+    side: "top",
+    value: 10
+  });
+  assert(missingRect === plan, "setWallCm should no-op for missing rectangle.");
+
+  const invalidSide = planReducer(plan, {
+    type: "plan/rectangles/setWallCm",
+    rectangleId: "rect_a",
+    side: "diagonal",
+    value: 10
+  });
+  assert(invalidSide === plan, "setWallCm should no-op for invalid side.");
+});

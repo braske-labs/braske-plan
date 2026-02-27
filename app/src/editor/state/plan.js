@@ -207,6 +207,42 @@ export function planReducer(plan, action) {
       });
     }
 
+    case "plan/rectangles/setWallCm": {
+      const rectangleIndex = plan.entities.rectangles.findIndex((rectangle) => rectangle.id === action.rectangleId);
+      if (rectangleIndex < 0) {
+        return plan;
+      }
+
+      const side = normalizeWallSide(action.side);
+      if (!side) {
+        return plan;
+      }
+
+      const current = plan.entities.rectangles[rectangleIndex];
+      const currentWallCm = normalizeWallCm(current.wallCm);
+      const nextValue = nonNegativeFiniteNumber(action.value, currentWallCm[side]);
+      if (nextValue === currentWallCm[side]) {
+        return plan;
+      }
+
+      const nextRectangles = plan.entities.rectangles.slice();
+      nextRectangles[rectangleIndex] = {
+        ...current,
+        wallCm: {
+          ...currentWallCm,
+          [side]: nextValue
+        }
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          rectangles: nextRectangles
+        }
+      });
+    }
+
     case "plan/debugSeedRectangles": {
       if (plan.entities.rectangles.length > 0 && !action.force) {
         return plan;
@@ -404,4 +440,25 @@ function finiteNumberOrNull(value) {
 
 function positiveFiniteNumber(value, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeFiniteNumber(value, fallback) {
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function normalizeWallCm(rawWallCm) {
+  const wallCm = rawWallCm && typeof rawWallCm === "object" ? rawWallCm : {};
+  return {
+    top: nonNegativeFiniteNumber(wallCm.top, 0),
+    right: nonNegativeFiniteNumber(wallCm.right, 0),
+    bottom: nonNegativeFiniteNumber(wallCm.bottom, 0),
+    left: nonNegativeFiniteNumber(wallCm.left, 0)
+  };
+}
+
+function normalizeWallSide(side) {
+  if (side === "top" || side === "right" || side === "bottom" || side === "left") {
+    return side;
+  }
+  return null;
 }

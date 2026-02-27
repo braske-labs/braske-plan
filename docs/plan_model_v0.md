@@ -101,6 +101,7 @@ Suggested rectangle shape:
 Notes:
 - `kind` replaces the prototype `isWall` boolean with a clearer domain field.
 - `wallCm` remains in v0 because the prototypes show it is useful, but calculations should not assume it is the final long-term model.
+- `wallCm` is required to drive derived shell geometry (`outerRect`, wall bands, shared-boundary derivation); it is not passive metadata.
 - `roomId` is on rectangles so multi-rectangle rooms can be modeled without duplicating geometry.
 
 ### `entities.rooms`
@@ -168,6 +169,7 @@ Notes:
 
 ### Derived (computed)
 - outer rectangles from `wallCm`
+- shared wall-to-wall boundaries between touching pieces
 - snap guides and candidate links
 - room polygons / merged outlines (later)
 - wall/perimeter segments
@@ -260,4 +262,3 @@ Notes:
 - `T-0005` / `T-0006`: operate on `entities.rectangles` only.
 - `T-0003` (autosave): should persist the v0 plan after this schema exists.
 - Snapping/magnetic links: model as transient/editor-layer mechanisms first; persist only if a future domain reason appears.
-

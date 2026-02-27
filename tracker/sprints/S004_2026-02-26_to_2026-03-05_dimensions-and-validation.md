@@ -29,13 +29,19 @@ Stretch points: 3
 - 2026-02-26: Started `T-0016`. Added pure basic-validation helper/tests (missing scale, overlap, invalid geometry, duplicate IDs) and UI validation summaries in debug/status/overlay; pending manual verification.
 - 2026-02-26: User manually verified `T-0016` validation behavior (missing-scale + overlap warnings) and responsiveness. Ticket marked DONE. Next target: `T-0017` (stretch).
 - 2026-02-26: Started `T-0017` (stretch). Added local JSON export/import toolbar controls, import via existing plan migration path, file I/O status messages, and T-0017 smoke-check steps; pending manual verification.
+- 2026-02-26: User manually verified `T-0017` JSON export/import round-trip and invalid-file safety. Ticket marked DONE. S004 scope complete; sprint closed.
 
 ## Review (append-only)
 ### Shipped
-- (append at end of sprint)
+- T-0014 (3 pts): Selected rectangle dimension readouts (world + meters/cm).
+- T-0015 (3 pts): On-canvas dimension labels for selected rectangle.
+- T-0016 (3 pts): Basic geometry validation status checks.
+- T-0017 (3 pts, stretch): Export/import plan JSON local round-trip.
+- Actual shipped points: 12 (9 committed + 3 stretch).
 
 ### Missed / deferred
-- (append at end of sprint)
+- None.
 
 ### Lessons / changes
-- (append at end of sprint)
+- Dimension and validation slices were a useful confidence layer before perimeter-focused work.
+- Keeping pure helpers + browser test harness reduced risk while interaction code changed.
