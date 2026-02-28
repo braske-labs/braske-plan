@@ -1,4 +1,4 @@
-import { deriveBaseboardCandidates } from "../../src/editor/geometry/baseboards.js";
+import { deriveBaseboardCandidates, deriveRoomWallContactModel } from "../../src/editor/geometry/baseboards.js";
 import { assert, assertClose, assertEqual, test } from "../test-runner.js";
 
 function createPlan(rectangles, metersPerWorldUnit = 0.01) {
@@ -182,4 +182,72 @@ test("unsupported open side segments exclude areas covered by neighboring suppor
   assertEqual(roomARightBaseboardSegments[0].wallSource, "neighborWall");
   assertClose(roomARightBaseboardSegments[0].lengthWorld, 80);
   assert(result.unsupportedOpenSideCount > 0);
+});
+
+test("room side inherits support from touching neighbor wallCm shell", () => {
+  const plan = createPlan([
+    {
+      id: "room_a",
+      kind: "roomRect",
+      x: 10,
+      y: 0,
+      w: 80,
+      h: 80,
+      wallCm: { top: 0, right: 0, bottom: 0, left: 0 },
+      roomId: "room_a"
+    },
+    {
+      id: "room_b",
+      kind: "roomRect",
+      x: 100,
+      y: 0,
+      w: 120,
+      h: 80,
+      wallCm: { top: 0, right: 0, bottom: 0, left: 10 },
+      roomId: "room_b"
+    }
+  ]);
+
+  const result = deriveBaseboardCandidates(plan);
+  const roomARightSegments = result.segments.filter(
+    (segment) => segment.rectangleId === "room_a" && segment.side === "right"
+  );
+
+  assertEqual(roomARightSegments.length, 1);
+  assertEqual(roomARightSegments[0].wallSource, "neighborWall");
+  assertClose(roomARightSegments[0].lengthWorld, 80);
+});
+
+test("room-wall contact model exposes normalized contact segments", () => {
+  const plan = createPlan([
+    {
+      id: "room_a",
+      kind: "roomRect",
+      x: 0,
+      y: 0,
+      w: 120,
+      h: 80,
+      wallCm: { top: 0, right: 0, bottom: 0, left: 0 },
+      roomId: "room_a"
+    },
+    {
+      id: "room_b",
+      kind: "roomRect",
+      x: 120,
+      y: 0,
+      w: 100,
+      h: 80,
+      wallCm: { top: 0, right: 0, bottom: 0, left: 10 },
+      roomId: "room_b"
+    }
+  ]);
+
+  const model = deriveRoomWallContactModel(plan);
+  const inheritedContacts = model.roomWallContacts.filter(
+    (segment) => segment.rectangleId === "room_a" && segment.side === "right"
+  );
+
+  assertEqual(inheritedContacts.length, 1);
+  assertEqual(inheritedContacts[0].wallSource, "neighborWall");
+  assertClose(inheritedContacts[0].lengthWorld, 80);
 });

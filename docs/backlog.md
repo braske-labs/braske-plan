@@ -71,6 +71,7 @@ Goal: doors/windows can be placed and resized and influence quantities.
 ### Epic E — Baseboards + estimates
 Goal: compute baseboards and show an explainable estimate.
 - E1. Derive wall/perimeter segments from authored shapes
+- E1b. Normalize room-wall contact model (intermediate geometry layer)
 - E2. Baseboard quantity with exclusions (room types + openings)
 - E3. “Highlight counted segments” overlay (debug)
 - E4. Local JSON price catalog + cost totals

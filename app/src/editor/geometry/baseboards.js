@@ -8,33 +8,24 @@ const OPPOSITE_SIDE = {
 };
 
 export function deriveBaseboardCandidates(plan, options = {}) {
-  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
-  const roomRectangles = rectangles.filter((rectangle) => rectangle?.kind !== "wallRect" && hasRectangleShape(rectangle));
-  const wallRectangles = rectangles.filter((rectangle) => rectangle?.kind === "wallRect" && hasRectangleShape(rectangle));
-  const touchToleranceWorld = positiveFinite(options.touchToleranceWorld, 1.5);
-  const overlapToleranceWorld = nonNegativeFinite(options.overlapToleranceWorld, 1e-3);
-  const metersPerWorldUnit = positiveFiniteOrNull(plan?.scale?.metersPerWorldUnit);
-
-  const roomSides = buildRoomSides(roomRectangles, wallRectangles, {
+  const topology = deriveRoomWallContactModel(plan, options);
+  const {
+    roomSides,
+    roomWallContacts,
+    sharedBoundaries,
+    unsupportedOpenSides,
+    roomRectangleCount,
+    wallRectangleCount,
+    metersPerWorldUnit,
     touchToleranceWorld,
-    overlapToleranceWorld,
-    metersPerWorldUnit
-  });
-  const supportedRoomSides = applyNeighborWallSupport(roomSides, touchToleranceWorld, overlapToleranceWorld);
-  const sharedBoundaries = deriveSharedBoundaries(supportedRoomSides, touchToleranceWorld, overlapToleranceWorld);
-  const sharedBoundaryRefsBySideId = indexSharedBoundaryRefsBySideId(sharedBoundaries);
+    overlapToleranceWorld
+  } = topology;
   const sameRoomPruneIntervalsBySideId = collectSameRoomPruneIntervalsBySideId(sharedBoundaries);
-  const unsupportedOpenSides = deriveUnsupportedOpenSides(
-    supportedRoomSides,
-    sharedBoundaryRefsBySideId,
-    overlapToleranceWorld,
-    metersPerWorldUnit
-  );
 
-  const candidateSegments = [];
+  const candidateSegments = roomWallContacts.map((contact) => ({ ...contact }));
   const segments = [];
 
-  for (const side of supportedRoomSides) {
+  for (const side of roomSides) {
     if (!side.hasWallSupport) {
       continue;
     }
@@ -46,17 +37,6 @@ export function deriveBaseboardCandidates(plan, options = {}) {
         ? `${side.id}:support:${supportIndex + 1}`
         : side.id;
       const intervalWallSource = resolveSupportWallSource(side);
-      const candidateSegment = createSegmentFromSideInterval(
-        side,
-        supportInterval.start,
-        supportInterval.end,
-        metersPerWorldUnit,
-        supportSegmentId,
-        intervalWallSource
-      );
-      if (candidateSegment) {
-        candidateSegments.push(candidateSegment);
-      }
 
       const keptIntervals = subtractIntervals(
         supportInterval.start,
@@ -92,8 +72,8 @@ export function deriveBaseboardCandidates(plan, options = {}) {
     candidateSegments,
     candidateSegmentCount: candidateSegments.length,
     prunedSegmentCount: Math.max(0, candidateSegments.length - segments.length),
-    roomRectangleCount: roomRectangles.length,
-    wallRectangleCount: wallRectangles.length,
+    roomRectangleCount,
+    wallRectangleCount,
     totalLengthWorld,
     totalLengthMeters,
     candidateTotalLengthWorld,
@@ -108,6 +88,71 @@ export function deriveBaseboardCandidates(plan, options = {}) {
     touchToleranceWorld,
     overlapToleranceWorld
   };
+}
+
+export function deriveRoomWallContactModel(plan, options = {}) {
+  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const roomRectangles = rectangles.filter((rectangle) => rectangle?.kind !== "wallRect" && hasRectangleShape(rectangle));
+  const wallRectangles = rectangles.filter((rectangle) => rectangle?.kind === "wallRect" && hasRectangleShape(rectangle));
+  const touchToleranceWorld = positiveFinite(options.touchToleranceWorld, 1.5);
+  const overlapToleranceWorld = nonNegativeFinite(options.overlapToleranceWorld, 1e-3);
+  const metersPerWorldUnit = positiveFiniteOrNull(plan?.scale?.metersPerWorldUnit);
+
+  const roomSides = buildRoomSides(roomRectangles, wallRectangles, {
+    touchToleranceWorld,
+    overlapToleranceWorld,
+    metersPerWorldUnit
+  });
+  const supportedRoomSides = applyNeighborWallSupport(roomSides, touchToleranceWorld, overlapToleranceWorld);
+  const sharedBoundaries = deriveSharedBoundaries(supportedRoomSides, touchToleranceWorld, overlapToleranceWorld);
+  const sharedBoundaryRefsBySideId = indexSharedBoundaryRefsBySideId(sharedBoundaries);
+  const unsupportedOpenSides = deriveUnsupportedOpenSides(
+    supportedRoomSides,
+    sharedBoundaryRefsBySideId,
+    overlapToleranceWorld,
+    metersPerWorldUnit
+  );
+  return {
+    roomSides: supportedRoomSides,
+    roomWallContacts: buildRoomWallContacts(supportedRoomSides, metersPerWorldUnit),
+    sharedBoundaries,
+    unsupportedOpenSides,
+    roomRectangleCount: roomRectangles.length,
+    wallRectangleCount: wallRectangles.length,
+    metersPerWorldUnit,
+    touchToleranceWorld,
+    overlapToleranceWorld
+  };
+}
+
+function buildRoomWallContacts(roomSides, metersPerWorldUnit) {
+  const contacts = [];
+
+  for (const side of roomSides) {
+    if (!side.hasWallSupport) {
+      continue;
+    }
+    const intervalWallSource = resolveSupportWallSource(side);
+    for (let supportIndex = 0; supportIndex < side.supportIntervals.length; supportIndex += 1) {
+      const supportInterval = side.supportIntervals[supportIndex];
+      const contactId = side.supportIntervals.length > 1
+        ? `${side.id}:support:${supportIndex + 1}`
+        : side.id;
+      const contactSegment = createSegmentFromSideInterval(
+        side,
+        supportInterval.start,
+        supportInterval.end,
+        metersPerWorldUnit,
+        contactId,
+        intervalWallSource
+      );
+      if (contactSegment) {
+        contacts.push(contactSegment);
+      }
+    }
+  }
+
+  return contacts;
 }
 
 function buildRoomSides(roomRectangles, wallRectangles, options) {
@@ -193,7 +238,7 @@ function applyNeighborWallSupport(roomSides, touchToleranceWorld, overlapToleran
       if (!neighbor.hasWallSupport) {
         continue;
       }
-      if (!approximatelyEqual(side.coordinateInterior, neighbor.coordinateInterior, touchToleranceWorld)) {
+      if (!touchesNeighborSupportedBoundary(side, neighbor, touchToleranceWorld)) {
         continue;
       }
 
@@ -221,6 +266,27 @@ function applyNeighborWallSupport(roomSides, touchToleranceWorld, overlapToleran
   }
 
   return propagatedSides;
+}
+
+function touchesNeighborSupportedBoundary(side, neighbor, touchToleranceWorld) {
+  const neighborSupportCoordinates = getNeighborSupportCoordinates(neighbor);
+  for (const coordinate of neighborSupportCoordinates) {
+    if (approximatelyEqual(side.coordinateInterior, coordinate, touchToleranceWorld)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getNeighborSupportCoordinates(side) {
+  const coordinates = [];
+  if (side.hasWallCmSupport) {
+    coordinates.push(side.coordinateOuter);
+  }
+  if (side.hasWallRectSupport || !side.hasWallCmSupport) {
+    coordinates.push(side.coordinateInterior);
+  }
+  return coordinates;
 }
 
 function getRectangleSideSpecs(rectangle) {

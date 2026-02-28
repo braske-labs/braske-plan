@@ -7,6 +7,7 @@ Status history (append-only):
 - 2026-02-26: OPEN
 - 2026-02-27: IN_PROGRESS (v1a baseboard candidate extraction + debug overlay toggle)
 - 2026-02-28: IN_PROGRESS (v1b interval-based support + shared-boundary pruning + open-side diagnostics)
+- 2026-02-28: DONE (v1 shipped; follow-up tuning bugs tracked separately)
 
 ## Goal
 Compute explainable derived wall/perimeter geometry from room + wall authoring and make candidate baseboard segments visible early so algorithm bugs can be inspected quickly.
@@ -19,7 +20,7 @@ Compute explainable derived wall/perimeter geometry from room + wall authoring a
 - [x] Derived geometry is separated from authoring primitives (no direct mutation of plan rectangles).
 - [x] Contact-based shared-boundary detect/prune for adjacent room shells is implemented.
 - [x] Enclosure/coverage checks for “room is fully walled” are implemented (first-pass unsupported-open-side interval diagnostics).
-- [ ] Current editor interactions remain responsive when derived geometry recomputes.
+- [x] Current editor interactions remain responsive when derived geometry recomputes.
 
 ## Notes / formulation
 This is a v1 foundation ticket, not the final estimator.
@@ -58,3 +59,4 @@ Prefer an intermediate segment model that can later support:
 - 2026-02-27 12:xx: Re-scoped with user feedback: prioritize candidate visibility and bug-finding before closure/coverage semantics.
 - 2026-02-27 12:xx: Implemented v1a candidate extraction + debug red overlay toggle; proceeding to v1b next.
 - 2026-02-28 10:xx: Implemented v1b interval-first pass (partial wall support intervals, shared-boundary seam pruning, and open-side diagnostics).
+- 2026-02-28 12:xx: Shipped v1 with normalized contact model checkpoint and neighbor-wall inheritance fix; residual edge cases continue as follow-up bug work.
