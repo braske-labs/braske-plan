@@ -54,3 +54,6 @@ Stretch points: 11
 ### Lessons / changes
 - Intermediate geometry normalization (`roomSides` + `roomWallContacts`) reduced patch complexity versus raw rectangle-pair heuristics.
 - Visual diagnostics in-canvas are essential; numeric warning counters alone are too slow for debugging geometry.
+
+### Corrections (append-only)
+- 2026-02-28: `T-0021` was shipped in S005 (ticket status is DONE) and should be treated as delivered, not deferred. Prior line in “Missed / deferred” is retained for historical trace.
