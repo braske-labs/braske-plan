@@ -18,6 +18,7 @@ export function createEditorShell(root) {
   const toolDrawRectButton = root.querySelector("[data-editor-action='tool-draw-rect']");
   const toolCalibrateScaleButton = root.querySelector("[data-editor-action='tool-calibrate-scale']");
   const deleteSelectedButton = root.querySelector("[data-editor-action='rect-delete']");
+  const rectangleKindToggleButton = root.querySelector("[data-editor-action='rect-toggle-kind']");
   const wallStatusElement = root.querySelector("[data-wall-status]");
   const wallTopValueElement = root.querySelector("[data-wall-value='top']");
   const wallRightValueElement = root.querySelector("[data-wall-value='right']");
@@ -34,6 +35,7 @@ export function createEditorShell(root) {
   const exportJsonButton = root.querySelector("[data-editor-action='plan-export-json']");
   const importJsonButton = root.querySelector("[data-editor-action='plan-import-json']");
   const importJsonFileInput = root.querySelector("[data-editor-file-input='plan-import']");
+  const baseboardDebugToggleButton = root.querySelector("[data-editor-action='debug-baseboard-toggle']");
   const backgroundOpacityDownButton = root.querySelector("[data-editor-action='bg-opacity-down']");
   const backgroundOpacityUpButton = root.querySelector("[data-editor-action='bg-opacity-up']");
   const backgroundMoveLeftButton = root.querySelector("[data-editor-action='bg-move-left']");
@@ -60,6 +62,7 @@ export function createEditorShell(root) {
       toolDrawRectButton,
       toolCalibrateScaleButton,
       deleteSelectedButton,
+      rectangleKindToggleButton,
       wallStatusElement,
       wallTopValueElement,
       wallRightValueElement,
@@ -76,6 +79,7 @@ export function createEditorShell(root) {
       exportJsonButton,
       importJsonButton,
       importJsonFileInput,
+      baseboardDebugToggleButton,
       backgroundOpacityDownButton,
       backgroundOpacityUpButton,
       backgroundMoveLeftButton,
@@ -100,7 +104,7 @@ function buildShell() {
         <h1>Apartment Planner MVP</h1>
       </div>
       <p>
-        T-0018 adds per-side wall thickness editing controls on the selected rectangle (top/right/bottom/left).
+        T-0019 starts baseboard candidate identification so counted segments can be debugged visually.
       </p>
       <div class="meta-row" aria-label="Sprint metadata">
         <div class="pill">
@@ -109,13 +113,13 @@ function buildShell() {
         </div>
         <div class="pill">
           <strong>Ticket</strong>
-          T-0018
+          T-0019
         </div>
       </div>
       <ol class="checklist" aria-label="Immediate next steps">
-        <li>This ticket: edit wall thickness for selected rectangle sides independently.</li>
-        <li>Persist wallCm values in plan state without disrupting drawing interactions.</li>
-        <li>Next: derive perimeter segments from authored geometry.</li>
+        <li>This ticket: derive first-pass baseboard candidate segments from room/wall geometry.</li>
+        <li>Show candidates with fat red debug lines using an on/off toggle.</li>
+        <li>Next: add enclosure/coverage checks and refine candidate filtering.</li>
       </ol>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">
@@ -124,6 +128,7 @@ function buildShell() {
         <button type="button" data-editor-action="tool-draw-rect" aria-pressed="false">Draw Rect</button>
         <button type="button" data-editor-action="tool-calibrate-scale" aria-pressed="false">Calibrate Scale</button>
         <button type="button" data-editor-action="rect-delete" disabled>Delete Rect</button>
+        <button type="button" data-editor-action="rect-toggle-kind" aria-pressed="false" disabled>Set As Wall</button>
         <details class="toolbar-disclosure wall-controls" open>
           <summary>
             <span class="toolbar-disclosure-title">Wall Cm</span>
@@ -159,6 +164,7 @@ function buildShell() {
         <button type="button" data-editor-action="plan-export-json">Export JSON</button>
         <button type="button" data-editor-action="plan-import-json">Import JSON</button>
         <input type="file" accept="application/json,.json" data-editor-file-input="plan-import" hidden>
+        <button type="button" data-editor-action="debug-baseboard-toggle" aria-pressed="false">Baseboard Debug</button>
         <span class="toolbar-inline-status" data-scale-status>Scale not calibrated</span>
         <details class="toolbar-disclosure bg-controls">
           <summary>

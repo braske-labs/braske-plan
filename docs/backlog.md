@@ -42,6 +42,7 @@ Goal: a drawing experience that makes it easy to trace a 2BR in <5 minutes.
 - A1. Project skeleton + dev workflow
 - A2. Canvas editor (pan/zoom/render loop)
 - A3. Rectangle authoring (draw/select/drag/resize)
+- A3b. Explicit wall-rectangle mode (outer-wall primitives)
 - A4. Snapping (ephemeral/contact-only)
 - A4b. Magnetic links + unlink (deferred until after first perimeter/baseboard outputs)
 - A5. Background screenshot overlay + opacity controls

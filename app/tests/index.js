@@ -6,6 +6,7 @@ import "./specs/coordinates.test.js";
 import "./specs/scale.test.js";
 import "./specs/validation.test.js";
 import "./specs/wall-shell.test.js";
+import "./specs/baseboards.test.js";
 
 const summaryElement = document.querySelector("#summary");
 const resultsElement = document.querySelector("#results");

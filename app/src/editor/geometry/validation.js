@@ -25,13 +25,14 @@ export function validateBasicPlanGeometry(plan, options = {}) {
     });
   }
 
-  const overlapPairCount = countOverlappingRectanglePairs(rectangles, maxOverlapPairs);
-  if (overlapPairCount > 0) {
+  const overlapSummary = collectOverlappingRectanglePairs(rectangles, maxOverlapPairs);
+  if (overlapSummary.count > 0) {
     findings.push({
       code: "rectangle_overlap",
       severity: "warning",
-      message: `${overlapPairCount} overlapping rectangle pair${overlapPairCount === 1 ? "" : "s"}`,
-      count: overlapPairCount
+      message: `${overlapSummary.count} overlapping rectangle pair${overlapSummary.count === 1 ? "" : "s"}`,
+      count: overlapSummary.count,
+      pairs: overlapSummary.pairs
     });
   }
 
@@ -52,7 +53,8 @@ export function validateBasicPlanGeometry(plan, options = {}) {
     warningCount,
     infoCount,
     rectangleCount: rectangles.length,
-    findings
+    findings,
+    overlapPairs: overlapSummary.pairs
   };
 }
 
@@ -85,22 +87,33 @@ function countInvalidRectangles(rectangles) {
   return count;
 }
 
-function countOverlappingRectanglePairs(rectangles, maxPairs) {
-  const validRectangles = rectangles.filter(hasValidRectangleGeometry);
-  let count = 0;
+function collectOverlappingRectanglePairs(rectangles, maxPairs) {
+  const validRectangles = rectangles
+    .map((rectangle, index) => ({ rectangle, index }))
+    .filter((entry) => hasValidRectangleGeometry(entry.rectangle));
+  const pairs = [];
 
   for (let index = 0; index < validRectangles.length; index += 1) {
+    const a = validRectangles[index];
     for (let otherIndex = index + 1; otherIndex < validRectangles.length; otherIndex += 1) {
-      if (rectanglesOverlapWithArea(validRectangles[index], validRectangles[otherIndex])) {
-        count += 1;
-        if (count >= maxPairs) {
-          return count;
-        }
+      const b = validRectangles[otherIndex];
+      if (!rectanglesOverlapWithArea(a.rectangle, b.rectangle)) {
+        continue;
+      }
+
+      pairs.push({
+        aIndex: a.index,
+        bIndex: b.index,
+        aId: toRectangleId(a.rectangle, a.index),
+        bId: toRectangleId(b.rectangle, b.index)
+      });
+      if (pairs.length >= maxPairs) {
+        return { count: pairs.length, pairs };
       }
     }
   }
 
-  return count;
+  return { count: pairs.length, pairs };
 }
 
 function hasValidRectangleGeometry(rectangle) {
@@ -122,6 +135,13 @@ function rectanglesOverlapWithArea(a, b) {
     a.y < b.y + b.h &&
     a.y + a.h > b.y
   );
+}
+
+function toRectangleId(rectangle, fallbackIndex) {
+  if (typeof rectangle?.id === "string" && rectangle.id) {
+    return rectangle.id;
+  }
+  return `rect_${fallbackIndex + 1}`;
 }
 
 function isPositiveFinite(value) {

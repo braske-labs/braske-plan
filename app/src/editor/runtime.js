@@ -15,6 +15,7 @@ import {
   formatMetersAndCentimeters,
   worldLengthToMeters
 } from "./geometry/scale.js";
+import { deriveBaseboardCandidates } from "./geometry/baseboards.js";
 import { snapDraggedRectangle, snapResizedRectangle } from "./geometry/snapping.js";
 import { validateBasicPlanGeometry } from "./geometry/validation.js";
 import {
@@ -43,6 +44,8 @@ const BACKGROUND_SCALE_DOWN = 1 / BACKGROUND_SCALE_UP;
 const SNAP_TOLERANCE_PX = 10;
 const MIN_CALIBRATION_LINE_WORLD = 8;
 const WALL_CM_STEP = 1;
+const OVERLAP_FLASH_PAIR_DURATION_MS = 1100;
+const OVERLAP_FLASH_BLINK_PERIOD_MS = 320;
 
 export function mountEditorRuntime(options) {
   const { canvas, statusElement, overlayElement, shellElement, controls = {} } = options;
@@ -102,6 +105,8 @@ export function mountEditorRuntime(options) {
   };
   let lastValidatedPlan = null;
   let lastValidationResult = null;
+  let lastBaseboardPlan = null;
+  let lastBaseboardResult = null;
   let nextUserRectangleId = deriveNextUserRectangleId(store.getState().plan);
 
   const resize = () => {
@@ -525,9 +530,21 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.baseboardDebugToggleButton) {
+    controls.baseboardDebugToggleButton.addEventListener("click", () => {
+      store.dispatch({ type: "editor/debug/toggleBaseboardOverlay" });
+    });
+  }
+
   if (controls.deleteSelectedButton) {
     controls.deleteSelectedButton.addEventListener("click", () => {
       deleteSelectedRectangle();
+    });
+  }
+
+  if (controls.rectangleKindToggleButton) {
+    controls.rectangleKindToggleButton.addEventListener("click", () => {
+      toggleSelectedRectangleKind();
     });
   }
 
@@ -740,6 +757,7 @@ export function mountEditorRuntime(options) {
     const dpr = viewport.dpr;
 
     const validation = getBasicValidationResult(plan);
+    const baseboard = getBaseboardResult(plan);
 
     ensureBackgroundImageLoaded(plan.background);
 
@@ -748,13 +766,14 @@ export function mountEditorRuntime(options) {
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, cssWidth, cssHeight);
 
-    drawWorld(context, plan, editorState, cssWidth, cssHeight, dpr);
-    drawScreenOverlay(context, editorState, plan, validation, pointerHover, cssWidth, cssHeight);
-    updateUiReadouts(editorState, plan, validation, timestamp);
+    drawWorld(context, plan, editorState, validation, cssWidth, cssHeight, dpr, baseboard, timestamp);
+    drawScreenOverlay(context, editorState, plan, validation, baseboard, pointerHover, cssWidth, cssHeight, timestamp);
+    updateUiReadouts(editorState, plan, validation, baseboard, timestamp);
   }
 
-  function drawWorld(ctx, plan, editorState, cssWidth, cssHeight, dpr) {
+  function drawWorld(ctx, plan, editorState, validation, cssWidth, cssHeight, dpr, baseboard, timestamp) {
     const { camera, selection } = editorState;
+    const showBaseboardOverlay = isBaseboardOverlayEnabled(editorState);
     ctx.save();
     ctx.setTransform(
       dpr * camera.zoom,
@@ -768,6 +787,10 @@ export function mountEditorRuntime(options) {
     drawBackgroundFrame(ctx, plan, backgroundImageState);
     drawGrid(ctx, camera, cssWidth, cssHeight);
     drawDebugRectangles(ctx, plan, selection.rectangleId, camera);
+    if (showBaseboardOverlay) {
+      drawBaseboardDebugSegments(ctx, baseboard, camera);
+    }
+    drawValidationOverlapFlash(ctx, plan, validation, camera, timestamp);
     drawSelectedResizeHandles(ctx, plan, editorState);
     drawDraftRectangle(ctx, editorState, camera);
     drawScaleReferenceLine(ctx, plan, camera);
@@ -777,8 +800,9 @@ export function mountEditorRuntime(options) {
     ctx.restore();
   }
 
-  function drawScreenOverlay(ctx, editorState, plan, validation, hover, cssWidth, cssHeight) {
+  function drawScreenOverlay(ctx, editorState, plan, validation, baseboard, hover, cssWidth, cssHeight, timestamp) {
     const { camera } = editorState;
+    const showBaseboardOverlay = isBaseboardOverlayEnabled(editorState);
     const selectedRectangle = getSelectedRectangle(plan, editorState);
     const originScreen = worldToScreen(camera, 0, 0);
 
@@ -804,8 +828,8 @@ export function mountEditorRuntime(options) {
     ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.strokeStyle = "rgba(0,0,0,0.15)";
     ctx.lineWidth = 1;
-    ctx.fillRect(12, 12, 470, 122);
-    ctx.strokeRect(12, 12, 470, 122);
+    ctx.fillRect(12, 12, 470, 154);
+    ctx.strokeRect(12, 12, 470, 154);
 
     ctx.fillStyle = "#1f1f1f";
     ctx.font = "12px Georgia, serif";
@@ -823,6 +847,8 @@ export function mountEditorRuntime(options) {
     ctx.fillText(`Validation: ${formatValidationSummaryDebug(validation)}`, 180, 66);
     ctx.fillText(`${formatValidationPrimaryMessage(validation)}`, 180, 82);
     ctx.fillText(`File IO: ${formatFileTransferStatusShort(fileTransferStatus)}`, 180, 98);
+    ctx.fillText(`Baseboard: ${formatBaseboardSummaryDebug(baseboard, showBaseboardOverlay)}`, 20, 114);
+    ctx.fillText(`Overlap flash: ${formatValidationOverlapFlashDebug(validation, timestamp)}`, 20, 130);
     ctx.restore();
 
     drawSelectedRectangleDimensionLabels(ctx, editorState, plan, hover, cssWidth, cssHeight);
@@ -840,7 +866,8 @@ export function mountEditorRuntime(options) {
     }
   }
 
-  function updateUiReadouts(editorState, plan, validation, timestamp) {
+  function updateUiReadouts(editorState, plan, validation, baseboard, timestamp) {
+    const showBaseboardOverlay = isBaseboardOverlayEnabled(editorState);
     frameCount += 1;
     framesSinceSample += 1;
     const sampleDuration = timestamp - lastFpsSampleMs;
@@ -860,27 +887,33 @@ export function mountEditorRuntime(options) {
       const scaleLabel = formatScaleShort(plan.scale);
       const selectedDimsLabel = formatSelectedRectangleDimensionsStatus(selectedRectangle, plan.scale);
       const selectedWallLabel = formatSelectedRectangleWallCmStatus(selectedRectangle);
+      const selectedKindLabel = formatSelectedRectangleKindStatus(selectedRectangle);
       const validationLabel = formatValidationSummaryStatus(validation);
+      const overlapFlashLabel = formatValidationOverlapFlashStatus(validation, timestamp);
+      const baseboardLabel = formatBaseboardSummaryStatus(baseboard, showBaseboardOverlay);
       const fileIoLabel = formatFileTransferStatusShort(fileTransferStatus);
       statusElement.textContent =
-        `T-0018 wall cm | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
+        `T-0019 baseboard v0 | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | overlap ${overlapFlashLabel} | ${baseboardLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | ` +
-        `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedDimsLabel ? ` (${selectedDimsLabel})` : ""}${selectedWallLabel ? ` [${selectedWallLabel}]` : ""} | ` +
+        `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedKindLabel ? ` (${selectedKindLabel})` : ""}${selectedDimsLabel ? ` ${selectedDimsLabel}` : ""}${selectedWallLabel ? ` [${selectedWallLabel}]` : ""} | ` +
         `fps ~${fps.toFixed(0)}`;
     }
 
     if (overlayElement) {
       const selectedRectangle = getSelectedRectangle(plan, editorState);
       overlayElement.innerHTML =
-        `T-0018 active (per-side wall thickness controls + prior editor slices). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `T-0019 active (baseboard candidate detection + debug overlay). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
         `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
         `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
         `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
         `${formatScaleDetail(plan.scale)}. Use Calibrate Scale tool to draw a reference line and enter meters.<br>` +
+        `Baseboard candidates: ${formatBaseboardSummaryOverlay(baseboard, showBaseboardOverlay)}.<br>` +
+        `Selected kind: ${formatSelectedRectangleKindOverlay(selectedRectangle)}.<br>` +
         `Selected dimensions: ${formatSelectedRectangleDimensionsOverlay(selectedRectangle, plan.scale)}.<br>` +
         `Selected wall cm: ${formatSelectedRectangleWallCmOverlay(selectedRectangle)}.<br>` +
         `Validation: ${formatValidationDetail(validation)}.<br>` +
+        `Overlap flash: ${formatValidationOverlapFlashOverlay(validation, timestamp)}.<br>` +
         `File I/O: ${formatFileTransferStatusDetail(fileTransferStatus)}.<br>` +
         `Drag/resize snaps within ${SNAP_TOLERANCE_PX}px. Delete uses toolbar button or Delete/Backspace.<br>` +
         `Autosave/load still active: ${describeLoadSource(persistenceStatus.loadSource)}; ${formatAutosaveStatusDetail(persistenceStatus)}.`;
@@ -894,6 +927,15 @@ export function mountEditorRuntime(options) {
     lastValidatedPlan = plan;
     lastValidationResult = validateBasicPlanGeometry(plan);
     return lastValidationResult;
+  }
+
+  function getBaseboardResult(plan) {
+    if (plan === lastBaseboardPlan && lastBaseboardResult) {
+      return lastBaseboardResult;
+    }
+    lastBaseboardPlan = plan;
+    lastBaseboardResult = deriveBaseboardCandidates(plan);
+    return lastBaseboardResult;
   }
 
   function syncEditorChrome() {
@@ -913,8 +955,23 @@ export function mountEditorRuntime(options) {
     if (controls.toolCalibrateScaleButton) {
       controls.toolCalibrateScaleButton.setAttribute("aria-pressed", state.tool === "calibrateScale" ? "true" : "false");
     }
+    if (controls.baseboardDebugToggleButton) {
+      controls.baseboardDebugToggleButton.setAttribute(
+        "aria-pressed",
+        isBaseboardOverlayEnabled(state) ? "true" : "false"
+      );
+    }
     if (controls.deleteSelectedButton) {
       controls.deleteSelectedButton.disabled = state.selection.rectangleId == null;
+    }
+    if (controls.rectangleKindToggleButton) {
+      const selectedRectangle = getSelectedRectangle(snapshot.plan, state);
+      const isWallRect = selectedRectangle?.kind === "wallRect";
+      controls.rectangleKindToggleButton.disabled = !selectedRectangle;
+      controls.rectangleKindToggleButton.setAttribute("aria-pressed", isWallRect ? "true" : "false");
+      controls.rectangleKindToggleButton.textContent = selectedRectangle
+        ? (isWallRect ? "Set As Room" : "Set As Wall")
+        : "Set As Wall";
     }
     syncWallControls(snapshot.plan, state);
     if (controls.backgroundStatusElement) {
@@ -1065,6 +1122,9 @@ export function mountEditorRuntime(options) {
     if (!selectedRectangle) {
       return false;
     }
+    if (selectedRectangle.kind === "wallRect") {
+      return false;
+    }
 
     const wallCm = normalizeWallCmForUi(selectedRectangle.wallCm);
     const currentValue = wallCm[side];
@@ -1086,27 +1146,46 @@ export function mountEditorRuntime(options) {
     return true;
   }
 
+  function toggleSelectedRectangleKind() {
+    const snapshot = store.getState();
+    const selectedRectangle = getSelectedRectangle(snapshot.plan, snapshot.editorState);
+    if (!selectedRectangle) {
+      return false;
+    }
+
+    const nextKind = selectedRectangle.kind === "wallRect" ? "roomRect" : "wallRect";
+    store.dispatch({
+      type: "plan/rectangles/setKind",
+      rectangleId: selectedRectangle.id,
+      kind: nextKind
+    });
+    return true;
+  }
+
   function syncWallControls(plan, editorState) {
     const selectedRectangle = getSelectedRectangle(plan, editorState);
     const wallCm = normalizeWallCmForUi(selectedRectangle?.wallCm);
     const hasSelection = Boolean(selectedRectangle);
+    const wallEditingEnabled = hasSelection && selectedRectangle.kind !== "wallRect";
 
     if (controls.wallStatusElement) {
       controls.wallStatusElement.textContent = hasSelection
-        ? `T ${wallCm.top} R ${wallCm.right} B ${wallCm.bottom} L ${wallCm.left}`
+        ? (wallEditingEnabled
+          ? `T ${wallCm.top} R ${wallCm.right} B ${wallCm.bottom} L ${wallCm.left}`
+          : "Wall rect selected")
         : "No selection";
     }
     if (controls.wallTopValueElement) {
-      controls.wallTopValueElement.textContent = hasSelection ? `${wallCm.top}` : "-";
+      controls.wallTopValueElement.textContent = wallEditingEnabled ? `${wallCm.top}` : "-";
     }
     if (controls.wallRightValueElement) {
-      controls.wallRightValueElement.textContent = hasSelection ? `${wallCm.right}` : "-";
+      controls.wallRightValueElement.textContent = wallEditingEnabled ? `${wallCm.right}` : "-";
     }
     if (controls.wallBottomValueElement) {
-      controls.wallBottomValueElement.textContent = hasSelection ? `${wallCm.bottom}` : "-";
+      controls.wallBottomValueElement.textContent = wallEditingEnabled ? `${wallCm.bottom}` : "-";
     }
     if (controls.wallLeftValueElement) {
-      controls.wallLeftValueElement.textContent = hasSelection ? `${wallCm.left}` : "-";
+      controls.wallLeftValueElement.textContent = wallEditingEnabled ? `${wallCm.left}` : "-";
     }
 
     const buttons = [
@@ -1121,7 +1200,7 @@ export function mountEditorRuntime(options) {
     ];
     for (const button of buttons) {
       if (button) {
-        button.disabled = !hasSelection;
+        button.disabled = !wallEditingEnabled;
       }
     }
   }
@@ -1357,8 +1436,25 @@ function formatSelectedRectangleDimensionsOverlay(rectangle, scale) {
   return `${worldLabel}; ${metricLabel}`;
 }
 
+function formatSelectedRectangleKindStatus(rectangle) {
+  if (!rectangle) {
+    return "";
+  }
+  return rectangle.kind === "wallRect" ? "wallRect" : "roomRect";
+}
+
+function formatSelectedRectangleKindOverlay(rectangle) {
+  if (!rectangle) {
+    return "none";
+  }
+  return rectangle.kind === "wallRect" ? "wallRect (whole wall primitive)" : "roomRect (room interior)";
+}
+
 function formatSelectedRectangleWallCmStatus(rectangle) {
   if (!rectangle) {
+    return "";
+  }
+  if (rectangle.kind === "wallRect") {
     return "";
   }
   const wallCm = normalizeWallCmForUi(rectangle.wallCm);
@@ -1369,8 +1465,48 @@ function formatSelectedRectangleWallCmOverlay(rectangle) {
   if (!rectangle) {
     return "none";
   }
+  if (rectangle.kind === "wallRect") {
+    return "n/a for wallRect";
+  }
   const wallCm = normalizeWallCmForUi(rectangle.wallCm);
   return `top ${wallCm.top}cm, right ${wallCm.right}cm, bottom ${wallCm.bottom}cm, left ${wallCm.left}cm`;
+}
+
+function formatBaseboardSummaryDebug(baseboard, showOverlay) {
+  const visibility = showOverlay ? "on" : "off";
+  if (!baseboard || baseboard.segmentCount === 0) {
+    return `0 segments (${visibility})`;
+  }
+  return `${baseboard.segmentCount} segments, ${formatBaseboardLength(baseboard)} (${visibility})`;
+}
+
+function formatBaseboardSummaryStatus(baseboard, showOverlay) {
+  const visibility = showOverlay ? "bb:on" : "bb:off";
+  if (!baseboard || baseboard.segmentCount === 0) {
+    return `${visibility} seg:0`;
+  }
+  return `${visibility} seg:${baseboard.segmentCount} len:${formatBaseboardLength(baseboard)}`;
+}
+
+function formatBaseboardSummaryOverlay(baseboard, showOverlay) {
+  const visibility = showOverlay ? "visible" : "hidden";
+  if (!baseboard || baseboard.segmentCount === 0) {
+    return `0 segments (${visibility})`;
+  }
+  return `${baseboard.segmentCount} segments totaling ${formatBaseboardLength(baseboard)} (${visibility})`;
+}
+
+function formatBaseboardLength(baseboard) {
+  if (!baseboard) {
+    return "0.0wu";
+  }
+  if (Number.isFinite(baseboard.totalLengthMeters)) {
+    return `${baseboard.totalLengthMeters.toFixed(2)}m`;
+  }
+  if (Number.isFinite(baseboard.totalLengthWorld)) {
+    return `${baseboard.totalLengthWorld.toFixed(1)}wu`;
+  }
+  return "n/a";
 }
 
 function formatValidationSummaryDebug(validation) {
@@ -1408,6 +1544,98 @@ function formatValidationDetail(validation) {
     .filter((finding) => finding.severity === "warning")
     .map((finding) => finding.message);
   return `WARN ${validation.warningCount}: ${messages.join("; ")}`;
+}
+
+function formatValidationOverlapFlashDebug(validation, timestamp) {
+  const flashState = getActiveOverlapFlashState(validation, timestamp);
+  if (!flashState) {
+    return "none";
+  }
+  const pairLabel = formatOverlapPairLabel(flashState.pair);
+  return `${flashState.pairIndex + 1}/${flashState.totalPairs} ${pairLabel} ${flashState.flashOn ? "ON" : "off"}`;
+}
+
+function formatValidationOverlapFlashStatus(validation, timestamp) {
+  const flashState = getActiveOverlapFlashState(validation, timestamp);
+  if (!flashState) {
+    return "none";
+  }
+  return `flash:${flashState.pairIndex + 1}/${flashState.totalPairs}`;
+}
+
+function formatValidationOverlapFlashOverlay(validation, timestamp) {
+  const flashState = getActiveOverlapFlashState(validation, timestamp);
+  if (!flashState) {
+    return "none";
+  }
+  return `pair ${flashState.pairIndex + 1}/${flashState.totalPairs} ${formatOverlapPairLabel(flashState.pair)} (${flashState.flashOn ? "on" : "off"})`;
+}
+
+function getActiveOverlapFlashState(validation, timestamp) {
+  const overlapPairs = Array.isArray(validation?.overlapPairs) ? validation.overlapPairs : [];
+  if (overlapPairs.length === 0) {
+    return null;
+  }
+
+  const ms = Number.isFinite(timestamp) ? timestamp : performance.now();
+  const pairIndex = Math.floor(ms / OVERLAP_FLASH_PAIR_DURATION_MS) % overlapPairs.length;
+  const flashOn = Math.floor(ms / OVERLAP_FLASH_BLINK_PERIOD_MS) % 2 === 0;
+  return {
+    pair: overlapPairs[pairIndex],
+    pairIndex,
+    totalPairs: overlapPairs.length,
+    flashOn
+  };
+}
+
+function formatOverlapPairLabel(pair) {
+  if (!pair) {
+    return "? ↔ ?";
+  }
+  const aLabel = pair.aId || toOverlapIndexLabel(pair.aIndex);
+  const bLabel = pair.bId || toOverlapIndexLabel(pair.bIndex);
+  return `${aLabel} ↔ ${bLabel}`;
+}
+
+function toOverlapIndexLabel(index) {
+  return Number.isInteger(index) ? `rect_${index + 1}` : "rect";
+}
+
+function resolveOverlapPairRectangle(rectangles, pairIndex, pairId) {
+  if (!Array.isArray(rectangles) || rectangles.length === 0) {
+    return null;
+  }
+  if (Number.isInteger(pairIndex) && pairIndex >= 0 && pairIndex < rectangles.length) {
+    const byIndex = rectangles[pairIndex];
+    if (byIndex && (!pairId || byIndex.id === pairId)) {
+      return byIndex;
+    }
+  }
+  if (typeof pairId === "string" && pairId) {
+    return rectangles.find((rectangle) => rectangle?.id === pairId) ?? null;
+  }
+  return null;
+}
+
+function collectUniqueOverlapRectangles(rectangles, overlapPairs) {
+  const unique = [];
+  const seen = new Set();
+
+  for (const pair of overlapPairs) {
+    const a = resolveOverlapPairRectangle(rectangles, pair?.aIndex, pair?.aId);
+    if (a && !seen.has(a)) {
+      seen.add(a);
+      unique.push(a);
+    }
+
+    const b = resolveOverlapPairRectangle(rectangles, pair?.bIndex, pair?.bId);
+    if (b && !seen.has(b)) {
+      seen.add(b);
+      unique.push(b);
+    }
+  }
+
+  return unique;
 }
 
 function formatFileTransferStatusShort(status) {
@@ -1495,7 +1723,7 @@ function drawSelectedRectangleDimensionLabels(ctx, editorState, plan, hover, css
 
   const widthLabel = `W ${formatSelectedRectangleCanvasDimension(rectangle.w, plan.scale)}`;
   const heightLabel = `H ${formatSelectedRectangleCanvasDimension(rectangle.h, plan.scale)}`;
-  const reservedRects = [{ x: 12, y: 12, w: 470, h: 122 }];
+  const reservedRects = [{ x: 12, y: 12, w: 470, h: 138 }];
   if (hover.active) {
     reservedRects.push({ x: cssWidth - 180, y: 12, w: 168, h: 28 });
   }
@@ -1776,6 +2004,10 @@ function getSelectedRectangle(plan, editorState) {
   return plan.entities.rectangles.find((rectangle) => rectangle.id === selectedId) ?? null;
 }
 
+function isBaseboardOverlayEnabled(editorState) {
+  return Boolean(editorState?.debug?.showBaseboardOverlay);
+}
+
 function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
   const metersPerWorldUnit = plan?.scale?.metersPerWorldUnit;
 
@@ -1825,6 +2057,69 @@ function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
   }
 }
 
+function drawValidationOverlapFlash(ctx, plan, validation, camera, timestamp) {
+  const overlapPairs = Array.isArray(validation?.overlapPairs) ? validation.overlapPairs : [];
+  if (overlapPairs.length === 0) {
+    return;
+  }
+
+  const rectangles = plan?.entities?.rectangles ?? [];
+  const overlapRectangles = collectUniqueOverlapRectangles(rectangles, overlapPairs);
+  if (overlapRectangles.length === 0) {
+    return;
+  }
+
+  const flashState = getActiveOverlapFlashState(validation, timestamp);
+  if (!flashState) {
+    return;
+  }
+
+  const metersPerWorldUnit = plan?.scale?.metersPerWorldUnit;
+  const highlightedRectangles = [
+    resolveOverlapPairRectangle(rectangles, flashState.pair?.aIndex, flashState.pair?.aId),
+    resolveOverlapPairRectangle(rectangles, flashState.pair?.bIndex, flashState.pair?.bId)
+  ].filter(Boolean);
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 183, 0, 0.9)";
+  ctx.lineWidth = 2.2 / camera.zoom;
+  ctx.setLineDash([9 / camera.zoom, 7 / camera.zoom]);
+  for (const rectangle of overlapRectangles) {
+    const bounds = getRectangleOuterRect(rectangle, metersPerWorldUnit) ?? rectangle;
+    ctx.strokeRect(bounds.x, bounds.y, bounds.w, bounds.h);
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  if (highlightedRectangles.length === 0) {
+    return;
+  }
+
+  const fillAlpha = flashState.flashOn ? 0.22 : 0.09;
+  const strokeAlpha = flashState.flashOn ? 0.98 : 0.52;
+  const strokeWidth = flashState.flashOn ? 4.4 : 2.4;
+
+  ctx.save();
+  ctx.fillStyle = `rgba(188, 38, 255, ${fillAlpha})`;
+  ctx.strokeStyle = `rgba(188, 38, 255, ${strokeAlpha})`;
+  ctx.lineWidth = strokeWidth / camera.zoom;
+
+  for (const rectangle of highlightedRectangles) {
+    const bounds = getRectangleOuterRect(rectangle, metersPerWorldUnit) ?? rectangle;
+    ctx.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
+    ctx.strokeRect(bounds.x, bounds.y, bounds.w, bounds.h);
+
+    ctx.beginPath();
+    ctx.moveTo(bounds.x, bounds.y);
+    ctx.lineTo(bounds.x + bounds.w, bounds.y + bounds.h);
+    ctx.moveTo(bounds.x + bounds.w, bounds.y);
+    ctx.lineTo(bounds.x, bounds.y + bounds.h);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 function buildPlanShellRectangles(plan) {
   const metersPerWorldUnit = plan?.scale?.metersPerWorldUnit;
   const shellRectangles = [];
@@ -1848,6 +2143,26 @@ function buildPlanShellRectangles(plan) {
 
 function getRectangleHitBounds(rectangle, scale) {
   return getRectangleOuterRect(rectangle, scale?.metersPerWorldUnit);
+}
+
+function drawBaseboardDebugSegments(ctx, baseboard, camera) {
+  if (!baseboard || !Array.isArray(baseboard.segments) || baseboard.segments.length === 0) {
+    return;
+  }
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(212, 30, 30, 0.95)";
+  ctx.lineWidth = 5 / camera.zoom;
+  ctx.lineCap = "round";
+
+  for (const segment of baseboard.segments) {
+    ctx.beginPath();
+    ctx.moveTo(segment.x0, segment.y0);
+    ctx.lineTo(segment.x1, segment.y1);
+    ctx.stroke();
+  }
+
+  ctx.restore();
 }
 
 function drawSelectedResizeHandles(ctx, plan, editorState) {

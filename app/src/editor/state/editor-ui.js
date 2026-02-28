@@ -20,6 +20,9 @@ export function createInitialEditorState() {
     selection: {
       rectangleId: null
     },
+    debug: {
+      showBaseboardOverlay: false
+    },
     interaction: {
       mode: "idle",
       pointerId: null,
@@ -64,6 +67,29 @@ export function editorUiReducer(state, action) {
           rectangleId: null
         }
       };
+
+    case "editor/debug/toggleBaseboardOverlay":
+      return {
+        ...state,
+        debug: {
+          ...state.debug,
+          showBaseboardOverlay: !state.debug.showBaseboardOverlay
+        }
+      };
+
+    case "editor/debug/setBaseboardOverlay": {
+      const show = Boolean(action.show);
+      if (Boolean(state.debug?.showBaseboardOverlay) === show) {
+        return state;
+      }
+      return {
+        ...state,
+        debug: {
+          ...state.debug,
+          showBaseboardOverlay: show
+        }
+      };
+    }
 
     case "editor/viewport/set":
       return {

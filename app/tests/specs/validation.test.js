@@ -48,6 +48,9 @@ test("basic validation detects rectangle overlap but ignores edge touching", () 
 
   assert(overlapFinding != null, "Expected overlap warning.");
   assertEqual(overlapFinding.count, 1);
+  assertEqual(result.overlapPairs.length, 1);
+  assertEqual(result.overlapPairs[0].aId, "a");
+  assertEqual(result.overlapPairs[0].bId, "b");
 });
 
 test("basic validation detects invalid rectangle geometry", () => {

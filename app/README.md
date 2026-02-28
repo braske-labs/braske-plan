@@ -262,6 +262,7 @@ This harness is dependency-free and runs in the browser because local Node is cu
    - validation summary updates without breaking interactions
 4. Create or drag rectangles so two rectangles overlap with area (not just touching edges):
    - validation warning shows overlap warning/count
+   - overlapping rectangles flash red in the canvas (pair-by-pair) so conflict locations are visible
 5. Move rectangles apart so they only touch edges:
    - overlap warning should clear (edge-touch is allowed)
 6. Confirm app remains responsive during drag/resize/pan/zoom with validation visible.
@@ -309,3 +310,46 @@ This harness is dependency-free and runs in the browser because local Node is cu
    - snapping uses shell contact (outer wall edges), not interior-only edges
    - autosave/reload
 8. Optional: open `http://127.0.0.1:4173/tests/` and confirm wall-shell/snapping tests pass.
+
+## T-0019 manual smoke check (baseboard candidates + red debug overlay)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Ensure at least one room rectangle exists with non-zero wall thickness on at least one side.
+3. Click `Baseboard Debug` in the toolbar:
+   - button enters pressed state
+   - fat red lines appear on counted room sides
+4. Click `Baseboard Debug` again:
+   - red lines hide without affecting geometry
+5. Change wall thickness (`Wall Cm`) on selected room sides:
+   - counted red segments update on next frame
+6. Add or move a `wallRect` that touches a room side with zero `wallCm`:
+   - that side can appear as a counted candidate (wall support via `wallRect`)
+7. Confirm status/overlay text includes baseboard candidate count/length.
+8. Optional: open `http://127.0.0.1:4173/tests/` and confirm baseboard tests pass.
+9. Partial support check:
+   - make a room side touched by a short `wallRect` only on part of the edge
+   - only the touched interval should be counted (not the whole side)
+10. Same-room seam check:
+   - create two touching rectangles with the same `roomId`
+   - if both seam sides have support, that seam should be pruned from kept red segments
+11. Enclosure check prep:
+   - sides not covered by own support or supported neighbors should remain visible in diagnostics (`unsupportedOpenSides` in helper output).
+
+## T-0022 manual smoke check (`is wall` / rectangle kind toggle)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Create or select a room rectangle.
+3. Click `Set As Wall`:
+   - selected rectangle changes to wall styling
+   - button changes to `Set As Room`
+   - `Wall Cm` controls show wall-editing disabled state
+4. Drag/resize the wall rectangle:
+   - interactions remain smooth and unchanged
+5. Click `Set As Room`:
+   - rectangle returns to room styling
+   - `Wall Cm` controls are enabled again for that selection
+6. Toggle `Baseboard Debug`:
+   - room rectangles contribute candidates
+   - wall rectangles can act as touching wall support for room sides
+7. Reload after autosave:
+   - selected rectangles preserve `roomRect`/`wallRect` kind.

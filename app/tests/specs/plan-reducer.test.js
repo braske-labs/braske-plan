@@ -102,3 +102,53 @@ test("plan reducer setWallCm no-ops for missing rectangle or invalid side", () =
   });
   assert(invalidSide === plan, "setWallCm should no-op for invalid side.");
 });
+
+test("plan reducer setKind updates rectangle kind and clears wallCm for wallRect", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        { id: "rect_a", kind: "roomRect", x: 0, y: 0, w: 120, h: 80, wallCm: { top: 5, right: 7, bottom: 9, left: 11 }, roomId: null, label: null }
+      ]
+    }
+  };
+
+  const nextPlan = planReducer(plan, {
+    type: "plan/rectangles/setKind",
+    rectangleId: "rect_a",
+    kind: "wallRect"
+  });
+
+  assert(nextPlan !== plan, "setKind should produce a new plan object.");
+  assertEqual(nextPlan.entities.rectangles[0].kind, "wallRect");
+  assertDeepEqual(nextPlan.entities.rectangles[0].wallCm, { top: 0, right: 0, bottom: 0, left: 0 });
+});
+
+test("plan reducer setKind no-ops for missing rectangle or invalid kind", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        { id: "rect_a", kind: "roomRect", x: 0, y: 0, w: 120, h: 80, wallCm: { top: 1, right: 1, bottom: 1, left: 1 }, roomId: null, label: null }
+      ]
+    }
+  };
+
+  const missingRect = planReducer(plan, {
+    type: "plan/rectangles/setKind",
+    rectangleId: "rect_missing",
+    kind: "wallRect"
+  });
+  assert(missingRect === plan, "setKind should no-op for missing rectangle.");
+
+  const invalidKind = planReducer(plan, {
+    type: "plan/rectangles/setKind",
+    rectangleId: "rect_a",
+    kind: "diagonalRect"
+  });
+  assert(invalidKind === plan, "setKind should no-op for invalid kind.");
+});

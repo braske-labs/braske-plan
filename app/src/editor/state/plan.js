@@ -207,6 +207,38 @@ export function planReducer(plan, action) {
       });
     }
 
+    case "plan/rectangles/setKind": {
+      const rectangleIndex = plan.entities.rectangles.findIndex((rectangle) => rectangle.id === action.rectangleId);
+      if (rectangleIndex < 0) {
+        return plan;
+      }
+
+      const nextKind = normalizeRectangleKind(action.kind);
+      if (!nextKind) {
+        return plan;
+      }
+
+      const current = plan.entities.rectangles[rectangleIndex];
+      if (current.kind === nextKind) {
+        return plan;
+      }
+
+      const nextRectangles = plan.entities.rectangles.slice();
+      nextRectangles[rectangleIndex] = {
+        ...current,
+        kind: nextKind,
+        wallCm: nextKind === "wallRect" ? { top: 0, right: 0, bottom: 0, left: 0 } : normalizeWallCm(current.wallCm)
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          rectangles: nextRectangles
+        }
+      });
+    }
+
     case "plan/rectangles/setWallCm": {
       const rectangleIndex = plan.entities.rectangles.findIndex((rectangle) => rectangle.id === action.rectangleId);
       if (rectangleIndex < 0) {
@@ -459,6 +491,13 @@ function normalizeWallCm(rawWallCm) {
 function normalizeWallSide(side) {
   if (side === "top" || side === "right" || side === "bottom" || side === "left") {
     return side;
+  }
+  return null;
+}
+
+function normalizeRectangleKind(kind) {
+  if (kind === "roomRect" || kind === "wallRect") {
+    return kind;
   }
   return null;
 }
