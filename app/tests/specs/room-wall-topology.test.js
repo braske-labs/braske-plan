@@ -47,6 +47,8 @@ test("room-wall topology decomposes rectangles into room and wall sets", () => {
 
   assertEqual(decomposition.roomRectangleCount, 1);
   assertEqual(decomposition.wallRectangleCount, 1);
+  assertEqual(decomposition.derivedWallRectangleCount, 1);
+  assertEqual(decomposition.wallRectangles.length, 2);
   assertEqual(decomposition.roomSides.length, 4);
 
   const topSide = decomposition.roomSides.find((side) => side.rectangleId === "room_a" && side.side === "top");

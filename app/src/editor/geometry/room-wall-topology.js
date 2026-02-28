@@ -1,12 +1,14 @@
-import { normalizeWallCm, wallCentimetersToWorld } from "./wall-shell.js";
+import { deriveRectangleShellGeometry, normalizeWallCm, wallCentimetersToWorld } from "./wall-shell.js";
 
 export function deriveRoomWallDecomposition(plan, options = {}) {
   const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
   const roomRectangles = rectangles.filter((rectangle) => rectangle?.kind !== "wallRect" && hasRectangleShape(rectangle));
-  const wallRectangles = rectangles.filter((rectangle) => rectangle?.kind === "wallRect" && hasRectangleShape(rectangle));
+  const explicitWallRectangles = rectangles.filter((rectangle) => rectangle?.kind === "wallRect" && hasRectangleShape(rectangle));
   const touchToleranceWorld = positiveFinite(options.touchToleranceWorld, 1.5);
   const overlapToleranceWorld = nonNegativeFinite(options.overlapToleranceWorld, 1e-3);
   const metersPerWorldUnit = positiveFiniteOrNull(plan?.scale?.metersPerWorldUnit);
+  const derivedWallRectangles = buildDerivedWallBandRectangles(roomRectangles, metersPerWorldUnit);
+  const wallRectangles = [...explicitWallRectangles, ...derivedWallRectangles];
   const roomSides = buildRoomSides(roomRectangles, metersPerWorldUnit);
 
   return {
@@ -14,11 +16,49 @@ export function deriveRoomWallDecomposition(plan, options = {}) {
     wallRectangles,
     roomSides,
     roomRectangleCount: roomRectangles.length,
-    wallRectangleCount: wallRectangles.length,
+    wallRectangleCount: explicitWallRectangles.length,
+    derivedWallRectangleCount: derivedWallRectangles.length,
     metersPerWorldUnit,
     touchToleranceWorld,
     overlapToleranceWorld
   };
+}
+
+function buildDerivedWallBandRectangles(roomRectangles, metersPerWorldUnit) {
+  const derived = [];
+
+  for (const rectangle of roomRectangles) {
+    const shell = deriveRectangleShellGeometry(rectangle, metersPerWorldUnit);
+    const bands = shell?.wallBands;
+    if (!bands) {
+      continue;
+    }
+    appendDerivedBand(derived, rectangle, "top", bands.top);
+    appendDerivedBand(derived, rectangle, "right", bands.right);
+    appendDerivedBand(derived, rectangle, "bottom", bands.bottom);
+    appendDerivedBand(derived, rectangle, "left", bands.left);
+  }
+
+  return derived;
+}
+
+function appendDerivedBand(derived, ownerRectangle, side, band) {
+  if (!hasRectangleShape(band)) {
+    return;
+  }
+
+  derived.push({
+    id: `derived_wall_band:${ownerRectangle.id}:${side}`,
+    kind: "wallRect",
+    x: band.x,
+    y: band.y,
+    w: band.w,
+    h: band.h,
+    source: "derivedWallBand",
+    ownerRectangleId: ownerRectangle.id,
+    ownerRoomId: typeof ownerRectangle.roomId === "string" ? ownerRectangle.roomId : null,
+    ownerSide: side
+  });
 }
 
 function buildRoomSides(roomRectangles, metersPerWorldUnit) {

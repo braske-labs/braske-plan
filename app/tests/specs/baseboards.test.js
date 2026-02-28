@@ -294,3 +294,38 @@ test("baseboard exists between room_room1 and room_room2 from exported plan geom
   assertClose(room2LeftSegments[0].y0, 457.23128201188615);
   assertClose(room2LeftSegments[0].y1, 678.2878259252687);
 });
+
+test("corner overlap from dual wallCm keeps near-corner interval on touching room side", () => {
+  const plan = createPlan([
+    {
+      id: "room_with_dual_walls",
+      kind: "roomRect",
+      x: 0,
+      y: 10,
+      w: 100,
+      h: 100,
+      wallCm: { top: 10, right: 10, bottom: 0, left: 0 },
+      roomId: "room_with_dual_walls"
+    },
+    {
+      id: "room_touching_right_wall",
+      kind: "roomRect",
+      x: 110,
+      y: 0,
+      w: 80,
+      h: 120,
+      wallCm: { top: 0, right: 0, bottom: 0, left: 0 },
+      roomId: "room_touching_right_wall"
+    }
+  ]);
+
+  const result = deriveBaseboardCandidates(plan);
+  const touchingLeftSegments = result.segments.filter(
+    (segment) => segment.rectangleId === "room_touching_right_wall" && segment.side === "left"
+  );
+
+  assertEqual(touchingLeftSegments.length, 1);
+  assertEqual(touchingLeftSegments[0].wallSource, "neighborWall");
+  assertClose(touchingLeftSegments[0].y0, 0);
+  assertClose(touchingLeftSegments[0].y1, 110);
+});
