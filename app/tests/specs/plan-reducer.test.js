@@ -11,6 +11,15 @@ test("plan reducer delete is a no-op when rectangle id is missing", () => {
   assert(nextPlan === plan, "Missing delete should return the same plan object.");
 });
 
+test("createEmptyPlan includes lighting collections", () => {
+  const plan = createEmptyPlan();
+  assertDeepEqual(plan.entities.lighting, {
+    fixtures: [],
+    groups: [],
+    links: []
+  });
+});
+
 test("plan reducer delete removes rectangle and cleans rooms/openings references", () => {
   const base = createEmptyPlan();
   const plan = {
@@ -538,4 +547,272 @@ test("plan reducer merge and dissolve keep room membership consistent", () => {
   for (const rectangle of dissolved.entities.rectangles) {
     assertEqual(rectangle.roomId, null, "Room dissolve should clear roomId for all former members.");
   }
+});
+
+test("plan reducer lighting add fixture validates kind and host", () => {
+  const base = createEmptyPlan();
+
+  const invalidSwitch = planReducer(base, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_1",
+    kind: "switch",
+    x: 120,
+    y: 80
+  });
+  assert(invalidSwitch === base, "Switch without wall host should no-op.");
+
+  const nextPlan = planReducer(base, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_1",
+    kind: "switch",
+    subtype: "switch_single",
+    x: 120,
+    y: 80,
+    roomId: "room_a",
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "right",
+      offset: 0.5
+    }
+  });
+  assert(nextPlan !== base, "Valid fixture add should produce a new plan object.");
+  assertEqual(nextPlan.entities.lighting.fixtures.length, 1);
+  assertEqual(nextPlan.entities.lighting.fixtures[0].kind, "switch");
+  assertEqual(nextPlan.entities.lighting.fixtures[0].host.type, "wallSide");
+});
+
+test("plan reducer lighting move fixture updates geometry and host", () => {
+  const base = createEmptyPlan();
+  const withFixture = planReducer(base, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_1",
+    kind: "switch",
+    x: 100,
+    y: 40,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0.25
+    }
+  });
+
+  const moved = planReducer(withFixture, {
+    type: "plan/lighting/moveFixture",
+    fixtureId: "fx_1",
+    x: 140,
+    y: 40,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0.45
+    }
+  });
+  assert(moved !== withFixture, "moveFixture should produce a new plan object.");
+  assertEqual(moved.entities.lighting.fixtures[0].x, 140);
+  assertEqual(moved.entities.lighting.fixtures[0].host.offset, 0.45);
+});
+
+test("plan reducer lighting link and unlink switch-to-lamp", () => {
+  const base = createEmptyPlan();
+  const withSwitch = planReducer(base, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_s1",
+    kind: "switch",
+    x: 100,
+    y: 60,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "left",
+      offset: 0.2
+    }
+  });
+  const withLamp = planReducer(withSwitch, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_l1",
+    kind: "lamp",
+    x: 160,
+    y: 120
+  });
+
+  const linked = planReducer(withLamp, {
+    type: "plan/lighting/linkSwitch",
+    switchId: "fx_s1",
+    targetType: "lamp",
+    targetId: "fx_l1"
+  });
+  assertEqual(linked.entities.lighting.links.length, 1);
+  assertEqual(linked.entities.lighting.links[0].switchId, "fx_s1");
+  assertEqual(linked.entities.lighting.links[0].targetId, "fx_l1");
+
+  const unlinked = planReducer(linked, {
+    type: "plan/lighting/unlinkSwitchTarget",
+    switchId: "fx_s1",
+    targetType: "lamp",
+    targetId: "fx_l1"
+  });
+  assertEqual(unlinked.entities.lighting.links.length, 0);
+});
+
+test("plan reducer lighting delete fixture prunes dependent links", () => {
+  const base = createEmptyPlan();
+  const withSwitch = planReducer(base, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_s1",
+    kind: "switch",
+    x: 80,
+    y: 80,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "left",
+      offset: 0.4
+    }
+  });
+  const withLamp = planReducer(withSwitch, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_l1",
+    kind: "lamp",
+    x: 160,
+    y: 120
+  });
+  const withLink = planReducer(withLamp, {
+    type: "plan/lighting/linkSwitch",
+    switchId: "fx_s1",
+    targetType: "lamp",
+    targetId: "fx_l1"
+  });
+
+  const deletedLamp = planReducer(withLink, {
+    type: "plan/lighting/deleteFixture",
+    fixtureId: "fx_l1"
+  });
+  assertEqual(deletedLamp.entities.lighting.fixtures.length, 1);
+  assertEqual(deletedLamp.entities.lighting.links.length, 0);
+});
+
+test("plan reducer moving rectangle keeps hosted switches and lamps glued", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        {
+          id: "rect_a",
+          kind: "roomRect",
+          x: 100,
+          y: 200,
+          w: 120,
+          h: 80,
+          wallCm: { top: 0, right: 0, bottom: 0, left: 0 },
+          roomId: "room_a",
+          label: null
+        }
+      ],
+      rooms: [
+        { id: "room_a", name: "A", roomType: "generic", rectangleIds: ["rect_a"] }
+      ],
+      lighting: {
+        fixtures: [
+          {
+            id: "fx_s1",
+            kind: "switch",
+            subtype: "switch_single",
+            x: 100,
+            y: 240,
+            roomId: "room_a",
+            host: { type: "wallSide", rectangleId: "rect_a", side: "left", offset: 0.5 },
+            meta: { label: null }
+          },
+          {
+            id: "fx_l1",
+            kind: "lamp",
+            subtype: "led_spot",
+            x: 150,
+            y: 230,
+            roomId: "room_a",
+            host: { type: "roomInterior", rectangleId: "rect_a", offsetX: 50, offsetY: 30 },
+            meta: { label: null }
+          }
+        ],
+        groups: [],
+        links: []
+      }
+    }
+  };
+
+  const moved = planReducer(plan, {
+    type: "plan/rectangles/move",
+    rectangleId: "rect_a",
+    x: 130,
+    y: 260
+  });
+  const movedSwitch = moved.entities.lighting.fixtures.find((fixture) => fixture.id === "fx_s1");
+  const movedLamp = moved.entities.lighting.fixtures.find((fixture) => fixture.id === "fx_l1");
+  assertEqual(movedSwitch.x, 130);
+  assertEqual(movedSwitch.y, 300);
+  assertEqual(movedLamp.x, 180);
+  assertEqual(movedLamp.y, 290);
+});
+
+test("plan reducer creates and deletes lamp groups and linked edges", () => {
+  const base = createEmptyPlan();
+  const withSwitch = planReducer(base, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_s1",
+    kind: "switch",
+    x: 40,
+    y: 20,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0.2
+    }
+  });
+  const withLampA = planReducer(withSwitch, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_l1",
+    kind: "lamp",
+    x: 80,
+    y: 80,
+    roomId: "room_a"
+  });
+  const withLampB = planReducer(withLampA, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_l2",
+    kind: "lamp",
+    x: 100,
+    y: 80,
+    roomId: "room_a"
+  });
+
+  const grouped = planReducer(withLampB, {
+    type: "plan/lighting/createGroupFromLamps",
+    groupId: "lg_user_1",
+    roomId: "room_a",
+    name: "Kitchen Spots",
+    fixtureIds: ["fx_l1", "fx_l2"]
+  });
+  assertEqual(grouped.entities.lighting.groups.length, 1);
+  assertEqual(grouped.entities.lighting.groups[0].id, "lg_user_1");
+
+  const linked = planReducer(grouped, {
+    type: "plan/lighting/linkSwitch",
+    switchId: "fx_s1",
+    targetType: "lampGroup",
+    targetId: "lg_user_1"
+  });
+  assertEqual(linked.entities.lighting.links.length, 1);
+
+  const deletedGroup = planReducer(linked, {
+    type: "plan/lighting/deleteGroup",
+    groupId: "lg_user_1"
+  });
+  assertEqual(deletedGroup.entities.lighting.groups.length, 0);
+  assertEqual(deletedGroup.entities.lighting.links.length, 0);
 });

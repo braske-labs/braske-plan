@@ -54,6 +54,9 @@ const WALL_CM_STEP = 1;
 const DEFAULT_ROOM_TYPE = "generic";
 const OVERLAP_FLASH_PAIR_DURATION_MS = 1100;
 const OVERLAP_FLASH_BLINK_PERIOD_MS = 320;
+const FIXTURE_HIT_RADIUS_PX = 14;
+const FIXTURE_SWITCH_RADIUS_WORLD = 10;
+const FIXTURE_LAMP_RADIUS_WORLD = 8;
 
 export function mountEditorRuntime(options) {
   const { canvas, statusElement, overlayElement, shellElement, controls = {} } = options;
@@ -118,6 +121,8 @@ export function mountEditorRuntime(options) {
   let lastLockedSeamsPlan = null;
   let lastLockedSeamSides = null;
   let nextUserRectangleId = deriveNextUserRectangleId(store.getState().plan);
+  let nextUserFixtureId = deriveNextUserFixtureId(store.getState().plan);
+  let nextUserLightingGroupId = deriveNextUserLightingGroupId(store.getState().plan);
 
   const resize = () => {
     const rect = canvas.getBoundingClientRect();
@@ -154,6 +159,7 @@ export function mountEditorRuntime(options) {
     const { editorState, plan } = state;
     const worldPoint = screenToWorld(editorState.camera, point.x, point.y);
     const selectedRectangle = getSelectedRectangle(plan, editorState);
+    const fixtureHit = hitTestLightingFixtures(plan, worldPoint, editorState.camera.zoom);
 
     if (event.button === 1) {
       canvas.setPointerCapture(event.pointerId);
@@ -169,6 +175,7 @@ export function mountEditorRuntime(options) {
 
     if (editorState.tool === "drawRect") {
       store.dispatch({ type: "editor/selection/clear" });
+      store.dispatch({ type: "editor/lightingSelection/clearFixture" });
       canvas.setPointerCapture(event.pointerId);
       store.dispatch({
         type: "editor/interaction/drawRectStart",
@@ -184,6 +191,7 @@ export function mountEditorRuntime(options) {
 
     if (editorState.tool === "calibrateScale") {
       store.dispatch({ type: "editor/selection/clear" });
+      store.dispatch({ type: "editor/lightingSelection/clearFixture" });
       canvas.setPointerCapture(event.pointerId);
       store.dispatch({
         type: "editor/interaction/calibrationStart",
@@ -193,6 +201,41 @@ export function mountEditorRuntime(options) {
         startWorldX: worldPoint.x,
         startWorldY: worldPoint.y
       });
+      syncEditorChrome();
+      return;
+    }
+
+    if (editorState.tool === "placeSwitch") {
+      const didCreate = createSwitchFixtureAtPointer(worldPoint);
+      if (didCreate) {
+        syncEditorChrome();
+      }
+      return;
+    }
+
+    if (editorState.tool === "placeLamp") {
+      const didCreate = createLampFixtureAtPointer(worldPoint);
+      if (didCreate) {
+        syncEditorChrome();
+      }
+      return;
+    }
+
+    if (editorState.tool === "linkLighting") {
+      if (!fixtureHit) {
+        return;
+      }
+      const fixture = fixtureHit.fixture;
+      store.dispatch({ type: "editor/selection/clear" });
+      store.dispatch({ type: "editor/lightingSelection/setFixture", fixtureId: fixture.id });
+      if (fixture.kind === "switch") {
+        store.dispatch({ type: "editor/lightingLink/setSwitch", switchId: fixture.id });
+      } else if (fixture.kind === "lamp") {
+        const sourceSwitchId = normalizeRectangleIdForUi(editorState?.lightingSelection?.linkSwitchId);
+        if (sourceSwitchId) {
+          toggleLightingSwitchLinkToLamp(fixture.id);
+        }
+      }
       syncEditorChrome();
       return;
     }
@@ -213,6 +256,31 @@ export function mountEditorRuntime(options) {
         type: "editor/merge/toggleRectangle",
         rectangleId: hit.rectangle.id
       });
+      syncEditorChrome();
+      return;
+    }
+
+    if (fixtureHit) {
+      const fixture = fixtureHit.fixture;
+      store.dispatch({ type: "editor/selection/clear" });
+      store.dispatch({ type: "editor/lightingSelection/setFixture", fixtureId: fixture.id });
+
+      if (editorState.tool === "navigate") {
+        const dragOffset = {
+          x: worldPoint.x - fixture.x,
+          y: worldPoint.y - fixture.y
+        };
+        canvas.setPointerCapture(event.pointerId);
+        store.dispatch({
+          type: "editor/interaction/fixtureDragStart",
+          pointerId: event.pointerId,
+          screenX: event.clientX,
+          screenY: event.clientY,
+          fixtureId: fixture.id,
+          offsetX: dragOffset.x,
+          offsetY: dragOffset.y
+        });
+      }
       syncEditorChrome();
       return;
     }
@@ -258,6 +326,7 @@ export function mountEditorRuntime(options) {
     if (hit) {
       const dragOffset = computeRectangleDragOffset(hit.rectangle, worldPoint);
 
+      store.dispatch({ type: "editor/lightingSelection/clearFixture" });
       store.dispatch({
         type: "editor/selection/set",
         rectangleId: hit.rectangle.id
@@ -278,6 +347,7 @@ export function mountEditorRuntime(options) {
     }
 
     store.dispatch({ type: "editor/selection/clear" });
+    store.dispatch({ type: "editor/lightingSelection/clearFixture" });
     canvas.setPointerCapture(event.pointerId);
     store.dispatch({
       type: "editor/interaction/panStart",
@@ -447,6 +517,63 @@ export function mountEditorRuntime(options) {
       );
       store.dispatch({
         type: "editor/interaction/rectDragMove",
+        pointerId: event.pointerId,
+        screenX: event.clientX,
+        screenY: event.clientY
+      });
+      return;
+    }
+
+    if (
+      state.editorState.interaction.mode === "draggingFixture" &&
+      state.editorState.interaction.pointerId === event.pointerId &&
+      state.editorState.interaction.dragFixture
+    ) {
+      const worldPoint = screenToWorld(state.editorState.camera, point.x, point.y);
+      const dragFixture = state.editorState.interaction.dragFixture;
+      const fixture = getLightingFixtureById(state.plan, dragFixture.fixtureId);
+      if (!fixture) {
+        store.dispatch({
+          type: "editor/interaction/fixtureDragMove",
+          pointerId: event.pointerId,
+          screenX: event.clientX,
+          screenY: event.clientY
+        });
+        return;
+      }
+
+      const targetPoint = {
+        x: worldPoint.x - dragFixture.offsetX,
+        y: worldPoint.y - dragFixture.offsetY
+      };
+      if (fixture.kind === "switch") {
+        const placement = projectPointToSwitchHostSide(state.plan, fixture.host, targetPoint);
+        if (placement) {
+          store.dispatch({
+            type: "plan/lighting/moveFixture",
+            fixtureId: fixture.id,
+            x: placement.x,
+            y: placement.y,
+            roomId: fixture.roomId ?? null,
+            host: placement.host
+          });
+        }
+      } else {
+        const roomRectangle = findRoomRectangleAtPoint(state.plan.entities.rectangles, targetPoint);
+        const roomId = normalizeRectangleIdForUi(roomRectangle?.roomId) ?? fixture.roomId ?? null;
+        const host = deriveLampInteriorHostFromRectangle(roomRectangle, targetPoint);
+        store.dispatch({
+          type: "plan/lighting/moveFixture",
+          fixtureId: fixture.id,
+          x: targetPoint.x,
+          y: targetPoint.y,
+          roomId,
+          host
+        });
+      }
+
+      store.dispatch({
+        type: "editor/interaction/fixtureDragMove",
         pointerId: event.pointerId,
         screenX: event.clientX,
         screenY: event.clientY
@@ -629,12 +756,35 @@ export function mountEditorRuntime(options) {
     });
   };
 
+  const onDoubleClick = (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const state = store.getState();
+    if (state.editorState.tool !== "navigate") {
+      return;
+    }
+
+    const point = toCanvasLocalPoint(canvas, event.clientX, event.clientY);
+    const worldPoint = screenToWorld(state.editorState.camera, point.x, point.y);
+    const fixtureHit = hitTestLightingFixtures(state.plan, worldPoint, state.editorState.camera.zoom);
+    if (!fixtureHit || fixtureHit.fixture.kind !== "switch") {
+      return;
+    }
+
+    store.dispatch({ type: "editor/selection/clear" });
+    store.dispatch({ type: "editor/lightingSelection/setFixture", fixtureId: fixtureHit.fixture.id });
+    store.dispatch({ type: "editor/lightingPreview/toggleSwitch", switchId: fixtureHit.fixture.id });
+    syncEditorChrome();
+  };
+
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", onPointerUp);
   canvas.addEventListener("pointercancel", onPointerCancel);
   canvas.addEventListener("pointerleave", onPointerLeave);
   canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("dblclick", onDoubleClick);
 
   if (controls.resetViewButton) {
     controls.resetViewButton.addEventListener("click", () => {
@@ -644,9 +794,17 @@ export function mountEditorRuntime(options) {
 
   if (controls.resetPlanButton) {
     controls.resetPlanButton.addEventListener("click", () => {
-      store.dispatch({ type: "plan/replace", plan: createEmptyPlan() });
+      const nextPlan = createEmptyPlan();
+      store.dispatch({ type: "plan/replace", plan: nextPlan });
       store.dispatch({ type: "editor/selection/clear" });
+      store.dispatch({ type: "editor/lightingSelection/clearFixture" });
+      store.dispatch({ type: "editor/lightingLink/clearSwitch" });
+      store.dispatch({ type: "editor/lightingSelection/clearGroup" });
+      store.dispatch({ type: "editor/lightingPreview/clear" });
       store.dispatch({ type: "editor/interaction/end", pointerId: null });
+      nextUserRectangleId = deriveNextUserRectangleId(nextPlan);
+      nextUserFixtureId = deriveNextUserFixtureId(nextPlan);
+      nextUserLightingGroupId = deriveNextUserLightingGroupId(nextPlan);
     });
   }
 
@@ -686,6 +844,24 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.toolPlaceSwitchButton) {
+    controls.toolPlaceSwitchButton.addEventListener("click", () => {
+      store.dispatch({ type: "editor/tool/set", tool: "placeSwitch" });
+    });
+  }
+
+  if (controls.toolPlaceLampButton) {
+    controls.toolPlaceLampButton.addEventListener("click", () => {
+      store.dispatch({ type: "editor/tool/set", tool: "placeLamp" });
+    });
+  }
+
+  if (controls.toolLinkLightingButton) {
+    controls.toolLinkLightingButton.addEventListener("click", () => {
+      store.dispatch({ type: "editor/tool/set", tool: "linkLighting" });
+    });
+  }
+
   if (controls.baseboardDebugToggleButton) {
     controls.baseboardDebugToggleButton.addEventListener("click", () => {
       store.dispatch({ type: "editor/debug/toggleBaseboardOverlay" });
@@ -695,6 +871,65 @@ export function mountEditorRuntime(options) {
   if (controls.deleteSelectedButton) {
     controls.deleteSelectedButton.addEventListener("click", () => {
       deleteSelectedRectangle();
+    });
+  }
+
+  if (controls.deleteSelectedFixtureButton) {
+    controls.deleteSelectedFixtureButton.addEventListener("click", () => {
+      deleteSelectedLightingFixture();
+    });
+  }
+
+  if (controls.unplugSelectedFixtureButton) {
+    controls.unplugSelectedFixtureButton.addEventListener("click", () => {
+      unplugSelectedLightingFixture();
+    });
+  }
+
+  if (controls.confirmLightingLinksButton) {
+    controls.confirmLightingLinksButton.addEventListener("click", () => {
+      confirmLightingLinkingSession();
+    });
+  }
+
+  if (controls.clearLightingLinkSourceButton) {
+    controls.clearLightingLinkSourceButton.addEventListener("click", () => {
+      store.dispatch({ type: "editor/lightingLink/clearSwitch" });
+      syncEditorChrome();
+    });
+  }
+
+  if (controls.lightingGroupSelect) {
+    controls.lightingGroupSelect.addEventListener("change", (event) => {
+      const target = event.currentTarget;
+      if (!(target instanceof HTMLSelectElement)) {
+        return;
+      }
+      const groupId = normalizeRectangleIdForUi(target.value);
+      if (groupId) {
+        store.dispatch({ type: "editor/lightingSelection/setGroup", groupId });
+      } else {
+        store.dispatch({ type: "editor/lightingSelection/clearGroup" });
+      }
+      syncEditorChrome();
+    });
+  }
+
+  if (controls.lightingCreateGroupButton) {
+    controls.lightingCreateGroupButton.addEventListener("click", () => {
+      createGroupFromActiveRoomLamps();
+    });
+  }
+
+  if (controls.lightingDeleteGroupButton) {
+    controls.lightingDeleteGroupButton.addEventListener("click", () => {
+      deleteSelectedLightingGroup();
+    });
+  }
+
+  if (controls.lightingToggleGroupLinkButton) {
+    controls.lightingToggleGroupLinkButton.addEventListener("click", () => {
+      toggleLightingSwitchLinkToSelectedGroup();
     });
   }
 
@@ -901,9 +1136,15 @@ export function mountEditorRuntime(options) {
       const importedPlan = parseImportedPlanJsonText(text);
       store.dispatch({ type: "plan/replace", plan: importedPlan });
       store.dispatch({ type: "editor/selection/clear" });
+      store.dispatch({ type: "editor/lightingSelection/clearFixture" });
+      store.dispatch({ type: "editor/lightingLink/clearSwitch" });
+      store.dispatch({ type: "editor/lightingSelection/clearGroup" });
+      store.dispatch({ type: "editor/lightingPreview/clear" });
       store.dispatch({ type: "editor/interaction/end", pointerId: null });
       store.dispatch({ type: "editor/tool/set", tool: "navigate" });
       nextUserRectangleId = deriveNextUserRectangleId(importedPlan);
+      nextUserFixtureId = deriveNextUserFixtureId(importedPlan);
+      nextUserLightingGroupId = deriveNextUserLightingGroupId(importedPlan);
       autosaveController.flushNow("import");
 
       setFileTransferStatus({
@@ -949,9 +1190,10 @@ export function mountEditorRuntime(options) {
     event.preventDefault();
 
     const didDelete = deleteSelectedRectangle();
-    if (!didDelete) {
+    if (didDelete) {
       return;
     }
+    deleteSelectedLightingFixture();
   };
 
   window.addEventListener("keydown", onWindowKeyDown);
@@ -1052,6 +1294,8 @@ export function mountEditorRuntime(options) {
       activeRoomId,
       lockedSeamSides
     );
+    drawLightingLinks(ctx, plan, editorState, camera);
+    drawLightingFixtures(ctx, plan, editorState, camera);
     if (showBaseboardOverlay) {
       drawBaseboardDebugSegments(ctx, baseboard, camera);
     }
@@ -1163,8 +1407,13 @@ export function mountEditorRuntime(options) {
         : 0;
       const internalSlideMode = isInternalSeamSlideAdjustEnabled(editorState) ? "slides:on" : "slides:off";
       const activeRoomId = deriveEffectiveActiveRoomId(plan, editorState);
+      const selectedFixture = getSelectedLightingFixture(plan, editorState);
+      const lightingTotals = computeLightingTotals(plan);
+      const selectedFixtureLabel = selectedFixture
+        ? `${selectedFixture.kind}:${selectedFixture.id}`
+        : "none";
       statusElement.textContent =
-        `T-0024 merge room v1 | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | overlap ${overlapFlashLabel} | ${baseboardLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
+        `T-0032 lighting v1 | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | overlap ${overlapFlashLabel} | ${baseboardLabel} | lights s:${lightingTotals.switchCount} l:${lightingTotals.lampCount} lk:${lightingTotals.linkCount} sel:${selectedFixtureLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
         `zoom ${camera.zoom.toFixed(2)}x | merge ${mergeSelectionCount} ${internalSlideMode} | active-room ${activeRoomId ?? "none"} | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedKindLabel ? ` (${selectedKindLabel})` : ""}${selectedDimsLabel ? ` ${selectedDimsLabel}` : ""}${selectedWallLabel ? ` [${selectedWallLabel}]` : ""}${selectedRoomLabel ? ` {${selectedRoomLabel}}` : ""} | ` +
@@ -1174,12 +1423,13 @@ export function mountEditorRuntime(options) {
     if (overlayElement) {
       const selectedRectangle = getSelectedRectangle(plan, editorState);
       overlayElement.innerHTML =
-        `T-0024 active (manual room merge + seam locks). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `T-0032 active (lighting layout v1 + links). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
         `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
         `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
         `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
         `${formatScaleDetail(plan.scale)}. Use Calibrate Scale for a reference line or Calibrate by Area with an active room.<br>` +
         `Baseboard candidates: ${formatBaseboardSummaryOverlay(baseboard, showBaseboardOverlay)}.<br>` +
+        `Lighting: ${formatLightingOverlaySummary(plan, editorState)}.<br>` +
         `Selected kind: ${formatSelectedRectangleKindOverlay(selectedRectangle)}.<br>` +
         `Selected room tag: ${formatSelectedRectangleRoomTagOverlay(selectedRectangle, plan)}.<br>` +
         `Selected dimensions: ${formatSelectedRectangleDimensionsOverlay(selectedRectangle, plan.scale)}.<br>` +
@@ -1187,6 +1437,8 @@ export function mountEditorRuntime(options) {
         `Validation: ${formatValidationDetail(validation)}.<br>` +
         `Overlap flash: ${formatValidationOverlapFlashOverlay(validation, timestamp)}.<br>` +
         `File I/O: ${formatFileTransferStatusDetail(fileTransferStatus)}.<br>` +
+        `Lighting quick use: double-click a switch in Navigate to toggle linked lamps; drag to move switch/lamp.<br>` +
+        `Link mode: click switch (source), click lamps to link/unlink, then Confirm Linking. Unplug Selected removes links for selected lamp/switch.<br>` +
         `Merge tool: select touching room rectangles, then Complete Merge. Merged room drag moves as one group; internal seams lock unless Internal Slides is enabled.<br>` +
         `Drag/resize snaps within ${SNAP_TOLERANCE_PX}px. Delete uses toolbar button or Delete/Backspace.<br>` +
         `Autosave/load still active: ${describeLoadSource(persistenceStatus.loadSource)}; ${formatAutosaveStatusDetail(persistenceStatus)}.`;
@@ -1198,7 +1450,22 @@ export function mountEditorRuntime(options) {
       return lastValidationResult;
     }
     lastValidatedPlan = plan;
-    lastValidationResult = validateBasicPlanGeometry(plan);
+    const basicValidation = validateBasicPlanGeometry(plan);
+    const lightingFindings = deriveLightingValidationFindings(plan);
+    if (lightingFindings.length === 0) {
+      lastValidationResult = basicValidation;
+      return lastValidationResult;
+    }
+    const findings = [...basicValidation.findings, ...lightingFindings];
+    const warningCount = findings.filter((finding) => finding.severity === "warning").length;
+    const infoCount = findings.filter((finding) => finding.severity === "info").length;
+    lastValidationResult = {
+      ...basicValidation,
+      status: warningCount > 0 ? "warning" : "ok",
+      warningCount,
+      infoCount,
+      findings
+    };
     return lastValidationResult;
   }
 
@@ -1242,6 +1509,15 @@ export function mountEditorRuntime(options) {
     if (controls.toolMergeRoomButton) {
       controls.toolMergeRoomButton.setAttribute("aria-pressed", state.tool === "mergeRoom" ? "true" : "false");
     }
+    if (controls.toolPlaceSwitchButton) {
+      controls.toolPlaceSwitchButton.setAttribute("aria-pressed", state.tool === "placeSwitch" ? "true" : "false");
+    }
+    if (controls.toolPlaceLampButton) {
+      controls.toolPlaceLampButton.setAttribute("aria-pressed", state.tool === "placeLamp" ? "true" : "false");
+    }
+    if (controls.toolLinkLightingButton) {
+      controls.toolLinkLightingButton.setAttribute("aria-pressed", state.tool === "linkLighting" ? "true" : "false");
+    }
     if (controls.roomInternalSlideToggleButton) {
       const enabled = isInternalSeamSlideAdjustEnabled(state);
       controls.roomInternalSlideToggleButton.setAttribute("aria-pressed", enabled ? "true" : "false");
@@ -1258,6 +1534,9 @@ export function mountEditorRuntime(options) {
     if (controls.deleteSelectedButton) {
       controls.deleteSelectedButton.disabled = state.selection.rectangleId == null;
     }
+    if (controls.deleteSelectedFixtureButton) {
+      controls.deleteSelectedFixtureButton.disabled = !getSelectedLightingFixture(snapshot.plan, state);
+    }
     if (controls.rectangleKindToggleButton) {
       const selectedRectangle = getSelectedRectangle(snapshot.plan, state);
       const isWallRect = selectedRectangle?.kind === "wallRect";
@@ -1270,6 +1549,7 @@ export function mountEditorRuntime(options) {
     syncWallControls(snapshot.plan, state);
     syncRoomControls(snapshot.plan, state);
     syncMergeControls(snapshot.plan, state);
+    syncLightingControls(snapshot.plan, state);
     syncAreaScaleCalibrationControl(snapshot.plan, state);
     if (controls.backgroundStatusElement) {
       controls.backgroundStatusElement.textContent = formatBackgroundShort(snapshot.plan.background, backgroundImageState);
@@ -1340,7 +1620,8 @@ export function mountEditorRuntime(options) {
     const { plan } = store.getState();
 
     try {
-      const json = JSON.stringify(plan, null, 2);
+      const exportPayload = buildPlanExportPayload(plan);
+      const json = JSON.stringify(exportPayload, null, 2);
       const blob = new Blob([json], { type: "application/json" });
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -1392,6 +1673,7 @@ export function mountEditorRuntime(options) {
     canvas.removeEventListener("pointercancel", onPointerCancel);
     canvas.removeEventListener("pointerleave", onPointerLeave);
     canvas.removeEventListener("wheel", onWheel);
+    canvas.removeEventListener("dblclick", onDoubleClick);
     if (controls.importJsonFileInput) {
       controls.importJsonFileInput.removeEventListener("change", onImportJsonFileChange);
     }
@@ -1410,6 +1692,323 @@ export function mountEditorRuntime(options) {
     });
     store.dispatch({ type: "editor/selection/clear" });
     store.dispatch({ type: "editor/interaction/end", pointerId: null });
+    syncEditorChrome();
+    return true;
+  }
+
+  function deleteSelectedLightingFixture() {
+    const state = store.getState();
+    const fixtureId = normalizeRectangleIdForUi(state.editorState?.lightingSelection?.fixtureId);
+    if (!fixtureId) {
+      return false;
+    }
+    store.dispatch({
+      type: "plan/lighting/deleteFixture",
+      fixtureId
+    });
+    store.dispatch({ type: "editor/lightingSelection/clearFixture" });
+    const linkSwitchId = normalizeRectangleIdForUi(state.editorState?.lightingSelection?.linkSwitchId);
+    if (linkSwitchId === fixtureId) {
+      store.dispatch({ type: "editor/lightingLink/clearSwitch" });
+    }
+    syncEditorChrome();
+    return true;
+  }
+
+  function confirmLightingLinkingSession() {
+    const state = store.getState();
+    if (state.editorState.tool !== "linkLighting" && !state.editorState?.lightingSelection?.linkSwitchId) {
+      return false;
+    }
+    store.dispatch({ type: "editor/lightingLink/clearSwitch" });
+    if (state.editorState.tool === "linkLighting") {
+      store.dispatch({ type: "editor/tool/set", tool: "navigate" });
+    }
+    syncEditorChrome();
+    return true;
+  }
+
+  function unplugSelectedLightingFixture() {
+    const snapshot = store.getState();
+    const selectedFixture = getSelectedLightingFixture(snapshot.plan, snapshot.editorState);
+    if (!selectedFixture) {
+      return false;
+    }
+    if (selectedFixture.kind === "switch") {
+      const didUnlink = unlinkAllLightingFromSwitch(selectedFixture.id);
+      const linkSourceId = normalizeRectangleIdForUi(snapshot.editorState?.lightingSelection?.linkSwitchId);
+      if (linkSourceId === selectedFixture.id) {
+        store.dispatch({ type: "editor/lightingLink/clearSwitch" });
+      }
+      syncEditorChrome();
+      return didUnlink;
+    }
+    if (selectedFixture.kind === "lamp") {
+      const didUnplug = unplugLampFromLighting(selectedFixture.id);
+      syncEditorChrome();
+      return didUnplug;
+    }
+    return false;
+  }
+
+  function unlinkAllLightingFromSwitch(switchId) {
+    const normalizedSwitchId = normalizeRectangleIdForUi(switchId);
+    if (!normalizedSwitchId) {
+      return false;
+    }
+    const snapshot = store.getState();
+    const lighting = getLightingCollections(snapshot.plan);
+    const links = lighting.links.filter((link) => link?.switchId === normalizedSwitchId);
+    if (links.length === 0) {
+      return false;
+    }
+    for (const link of links) {
+      if (!link?.targetType || !link?.targetId) {
+        continue;
+      }
+      store.dispatch({
+        type: "plan/lighting/unlinkSwitchTarget",
+        switchId: normalizedSwitchId,
+        targetType: link.targetType,
+        targetId: link.targetId
+      });
+    }
+    return true;
+  }
+
+  function unplugLampFromLighting(lampId) {
+    const normalizedLampId = normalizeRectangleIdForUi(lampId);
+    if (!normalizedLampId) {
+      return false;
+    }
+
+    const snapshot = store.getState();
+    const lighting = getLightingCollections(snapshot.plan);
+    let changed = false;
+
+    const directLinks = lighting.links.filter((link) => (
+      link?.targetType === "lamp" &&
+      link?.targetId === normalizedLampId
+    ));
+    for (const link of directLinks) {
+      const switchId = normalizeRectangleIdForUi(link?.switchId);
+      if (!switchId) {
+        continue;
+      }
+      store.dispatch({
+        type: "plan/lighting/unlinkSwitchTarget",
+        switchId,
+        targetType: "lamp",
+        targetId: normalizedLampId
+      });
+      changed = true;
+    }
+
+    const groupsWithLamp = lighting.groups.filter((group) => (
+      Array.isArray(group?.fixtureIds) && group.fixtureIds.includes(normalizedLampId)
+    ));
+    for (const group of groupsWithLamp) {
+      const nextFixtureIds = group.fixtureIds.filter((fixtureId) => fixtureId !== normalizedLampId);
+      if (nextFixtureIds.length === group.fixtureIds.length) {
+        continue;
+      }
+      if (nextFixtureIds.length === 0) {
+        store.dispatch({
+          type: "plan/lighting/deleteGroup",
+          groupId: group.id
+        });
+        const selectedGroupId = normalizeRectangleIdForUi(store.getState().editorState?.lightingSelection?.groupId);
+        if (selectedGroupId === group.id) {
+          store.dispatch({ type: "editor/lightingSelection/clearGroup" });
+        }
+      } else {
+        store.dispatch({
+          type: "plan/lighting/updateGroupLamps",
+          groupId: group.id,
+          roomId: group.roomId,
+          name: group.name,
+          fixtureIds: nextFixtureIds
+        });
+      }
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  function createSwitchFixtureAtPointer(worldPoint) {
+    const snapshot = store.getState();
+    const placement = deriveSwitchPlacementAtPoint(
+      snapshot.plan,
+      worldPoint,
+      snapshot.editorState.selection?.rectangleId
+    );
+    if (!placement) {
+      return false;
+    }
+
+    const fixtureId = `fx_user_${nextUserFixtureId++}`;
+    store.dispatch({
+      type: "plan/lighting/addFixture",
+      fixtureId,
+      kind: "switch",
+      subtype: "switch_single",
+      x: placement.x,
+      y: placement.y,
+      roomId: placement.roomId,
+      host: placement.host
+    });
+    store.dispatch({ type: "editor/selection/clear" });
+    store.dispatch({ type: "editor/lightingSelection/setFixture", fixtureId });
+    return true;
+  }
+
+  function createLampFixtureAtPointer(worldPoint) {
+    const snapshot = store.getState();
+    const roomRectangle = findRoomRectangleAtPoint(snapshot.plan.entities.rectangles, worldPoint);
+    const roomId = normalizeRectangleIdForUi(roomRectangle?.roomId) ?? null;
+    const host = deriveLampInteriorHostFromRectangle(roomRectangle, worldPoint);
+    const fixtureId = `fx_user_${nextUserFixtureId++}`;
+    store.dispatch({
+      type: "plan/lighting/addFixture",
+      fixtureId,
+      kind: "lamp",
+      subtype: "led_spot",
+      x: worldPoint.x,
+      y: worldPoint.y,
+      roomId,
+      host
+    });
+    store.dispatch({ type: "editor/selection/clear" });
+    store.dispatch({ type: "editor/lightingSelection/setFixture", fixtureId });
+    return true;
+  }
+
+  function toggleLightingSwitchLinkToLamp(lampId) {
+    const snapshot = store.getState();
+    const switchId = normalizeRectangleIdForUi(snapshot.editorState?.lightingSelection?.linkSwitchId);
+    if (!switchId) {
+      return false;
+    }
+
+    const lighting = getLightingCollections(snapshot.plan);
+    const existingLink = lighting.links.find((link) => (
+      link?.switchId === switchId &&
+      link?.targetType === "lamp" &&
+      link?.targetId === lampId
+    ));
+    if (existingLink) {
+      store.dispatch({
+        type: "plan/lighting/unlinkSwitchTarget",
+        switchId,
+        targetType: "lamp",
+        targetId: lampId
+      });
+      return true;
+    }
+
+    store.dispatch({
+      type: "plan/lighting/linkSwitch",
+      switchId,
+      targetType: "lamp",
+      targetId: lampId
+    });
+    return true;
+  }
+
+  function createGroupFromActiveRoomLamps() {
+    const snapshot = store.getState();
+    const activeRoom = getActiveRoomEntry(snapshot.plan, snapshot.editorState);
+    const roomId = normalizeRectangleIdForUi(activeRoom?.roomId);
+    if (!roomId) {
+      return false;
+    }
+
+    const lighting = getLightingCollections(snapshot.plan);
+    const lampFixtures = lighting.fixtures.filter((fixture) => fixture?.kind === "lamp" && fixture?.roomId === roomId);
+    const fixtureIds = lampFixtures
+      .map((fixture) => normalizeRectangleIdForUi(fixture?.id))
+      .filter(Boolean);
+    if (fixtureIds.length === 0) {
+      return false;
+    }
+
+    const selectedGroupId = normalizeRectangleIdForUi(snapshot.editorState?.lightingSelection?.groupId);
+    const selectedGroup = selectedGroupId
+      ? lighting.groups.find((group) => group?.id === selectedGroupId && group?.roomId === roomId) ?? null
+      : null;
+    let groupId = selectedGroup?.id ?? null;
+    let groupName = selectedGroup?.name ?? null;
+    if (!groupId) {
+      const nextGroupIndex = nextUserLightingGroupId;
+      groupId = `lg_user_${nextGroupIndex}`;
+      groupName = `Lamp Group ${nextGroupIndex}`;
+      nextUserLightingGroupId += 1;
+    }
+
+    store.dispatch({
+      type: selectedGroup ? "plan/lighting/updateGroupLamps" : "plan/lighting/createGroupFromLamps",
+      groupId,
+      roomId,
+      name: groupName,
+      fixtureIds
+    });
+    store.dispatch({ type: "editor/lightingSelection/setGroup", groupId });
+    ensureLightingSwitchLinkToGroup(groupId, normalizeRectangleIdForUi(snapshot.editorState?.lightingSelection?.linkSwitchId));
+    syncEditorChrome();
+    return true;
+  }
+
+  function deleteSelectedLightingGroup() {
+    const snapshot = store.getState();
+    const groupId = normalizeRectangleIdForUi(snapshot.editorState?.lightingSelection?.groupId);
+    if (!groupId) {
+      return false;
+    }
+    store.dispatch({
+      type: "plan/lighting/deleteGroup",
+      groupId
+    });
+    store.dispatch({ type: "editor/lightingSelection/clearGroup" });
+    syncEditorChrome();
+    return true;
+  }
+
+  function toggleLightingSwitchLinkToSelectedGroup() {
+    const snapshot = store.getState();
+    const switchId = normalizeRectangleIdForUi(snapshot.editorState?.lightingSelection?.linkSwitchId);
+    const groupIdFromState = normalizeRectangleIdForUi(snapshot.editorState?.lightingSelection?.groupId);
+    const groupIdFromControl = normalizeRectangleIdForUi(controls.lightingGroupSelect?.value);
+    const groupId = groupIdFromState ?? groupIdFromControl;
+    if (!switchId || !groupId) {
+      return false;
+    }
+    return ensureLightingSwitchLinkToGroup(groupId, switchId);
+  }
+
+  function ensureLightingSwitchLinkToGroup(groupId, switchId) {
+    const normalizedGroupId = normalizeRectangleIdForUi(groupId);
+    const normalizedSwitchId = normalizeRectangleIdForUi(switchId);
+    if (!normalizedGroupId || !normalizedSwitchId) {
+      return false;
+    }
+    const snapshot = store.getState();
+    const lighting = getLightingCollections(snapshot.plan);
+    const existingLink = lighting.links.find((link) => (
+      link?.switchId === normalizedSwitchId &&
+      link?.targetType === "lampGroup" &&
+      link?.targetId === normalizedGroupId
+    ));
+    if (existingLink) {
+      syncEditorChrome();
+      return true;
+    }
+    store.dispatch({
+      type: "plan/lighting/linkSwitch",
+      switchId: normalizedSwitchId,
+      targetType: "lampGroup",
+      targetId: normalizedGroupId
+    });
     syncEditorChrome();
     return true;
   }
@@ -1786,6 +2385,100 @@ export function mountEditorRuntime(options) {
     }
   }
 
+  function syncLightingControls(plan, editorState) {
+    const lighting = getLightingCollections(plan);
+    const activeRoomEntry = getActiveRoomEntry(plan, editorState);
+    const activeRoomId = normalizeRectangleIdForUi(activeRoomEntry?.roomId);
+    const selectedFixture = getSelectedLightingFixture(plan, editorState);
+    const selectedGroupId = normalizeRectangleIdForUi(editorState?.lightingSelection?.groupId);
+    const selectedGroup = selectedGroupId
+      ? lighting.groups.find((group) => group?.id === selectedGroupId) ?? null
+      : null;
+    const linkSourceSwitchId = normalizeRectangleIdForUi(editorState?.lightingSelection?.linkSwitchId);
+    const selectedLinkSource = linkSourceSwitchId
+      ? getLightingFixtureById(plan, linkSourceSwitchId)
+      : null;
+    const selectedFixtureLabel = selectedFixture
+      ? `${selectedFixture.kind} ${selectedFixture.id}`
+      : "No fixture selected";
+    const lampCountInActiveRoom = activeRoomId
+      ? lighting.fixtures.filter((fixture) => fixture?.kind === "lamp" && fixture?.roomId === activeRoomId).length
+      : 0;
+    const visibleGroups = activeRoomId
+      ? lighting.groups.filter((group) => group?.roomId === activeRoomId)
+      : lighting.groups.slice();
+    const selectedGroupStillVisible = selectedGroup ? visibleGroups.some((group) => group.id === selectedGroup.id) : false;
+
+    if (controls.lightingStatusElement) {
+      let statusLabel = selectedFixtureLabel;
+      if (editorState.tool === "linkLighting") {
+        if (selectedLinkSource && selectedLinkSource.kind === "switch") {
+          statusLabel = selectedGroup
+            ? `Source ${selectedLinkSource.id}; click lamps to link/unlink or Link Source → Group (${selectedGroup.name})`
+            : `Source ${selectedLinkSource.id}; click lamps to link/unlink`;
+        } else {
+          statusLabel = "Link mode: click a switch first, then click lamps";
+        }
+      }
+      controls.lightingStatusElement.textContent = statusLabel;
+    }
+
+    if (controls.lightingGroupSelect) {
+      const currentValue = normalizeRectangleIdForUi(controls.lightingGroupSelect.value);
+      controls.lightingGroupSelect.replaceChildren();
+      if (visibleGroups.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = activeRoomId ? "No groups in active room" : "No groups";
+        controls.lightingGroupSelect.append(option);
+        controls.lightingGroupSelect.disabled = true;
+      } else {
+        for (const group of visibleGroups) {
+          const lampCount = Array.isArray(group?.fixtureIds) ? group.fixtureIds.length : 0;
+          const option = document.createElement("option");
+          option.value = group.id;
+          option.textContent = `${group.name} (${lampCount})`;
+          controls.lightingGroupSelect.append(option);
+        }
+        controls.lightingGroupSelect.disabled = false;
+        const preferredValue = selectedGroupStillVisible
+          ? selectedGroup.id
+          : (currentValue && visibleGroups.some((group) => group.id === currentValue)
+            ? currentValue
+            : visibleGroups[0].id);
+        controls.lightingGroupSelect.value = preferredValue;
+      }
+    }
+
+    if (controls.lightingCreateGroupButton) {
+      controls.lightingCreateGroupButton.disabled = !(activeRoomId && lampCountInActiveRoom > 0);
+    }
+
+    if (controls.lightingDeleteGroupButton) {
+      controls.lightingDeleteGroupButton.disabled = !selectedGroup;
+    }
+
+    if (controls.lightingToggleGroupLinkButton) {
+      controls.lightingToggleGroupLinkButton.disabled = !(selectedGroup && selectedLinkSource && selectedLinkSource.kind === "switch");
+    }
+
+    if (controls.confirmLightingLinksButton) {
+      controls.confirmLightingLinksButton.disabled = editorState.tool !== "linkLighting";
+    }
+
+    if (controls.unplugSelectedFixtureButton) {
+      const canUnplug = selectedFixture?.kind === "lamp" || selectedFixture?.kind === "switch";
+      controls.unplugSelectedFixtureButton.disabled = !canUnplug;
+      controls.unplugSelectedFixtureButton.textContent = selectedFixture?.kind === "switch"
+        ? "Unplug Switch Links"
+        : (selectedFixture?.kind === "lamp" ? "Unplug Lamp" : "Unplug Selected");
+    }
+
+    if (controls.clearLightingLinkSourceButton) {
+      controls.clearLightingLinkSourceButton.disabled = !selectedLinkSource;
+    }
+  }
+
   function syncAreaScaleCalibrationControl(plan, editorState) {
     if (!controls.calibrateScaleByAreaButton) {
       return;
@@ -1877,6 +2570,7 @@ export function mountEditorRuntime(options) {
     const effectiveActiveRoomId = deriveEffectiveActiveRoomId(plan, editorState, roomEntries);
     const metersPerWorldUnit = plan.scale?.metersPerWorldUnit;
     const totalMetrics = computeRoomsAggregateMetrics(roomEntries, plan, baseboard, metersPerWorldUnit);
+    const lightingTotals = computeLightingTotals(plan);
 
     if (roomSummaryElement) {
       const roomCountLabel = `${roomEntries.length} room${roomEntries.length === 1 ? "" : "s"}`;
@@ -1886,8 +2580,9 @@ export function mountEditorRuntime(options) {
     }
 
     if (roomTotalsElement) {
+      const subtypeLabel = formatLightingSubtypeCounts(lightingTotals.subtypeCounts);
       roomTotalsElement.textContent =
-        `Total: area ${totalMetrics.areaLabel} • baseboard ${totalMetrics.baseboardLabel}`;
+        `Total: area ${totalMetrics.areaLabel} • baseboard ${totalMetrics.baseboardLabel} • switches ${lightingTotals.switchCount} • lamps ${lightingTotals.lampCount} • groups ${lightingTotals.groupCount} • links ${lightingTotals.linkCount}${subtypeLabel ? ` • ${subtypeLabel}` : ""}`;
     }
 
     if (roomListElement) {
@@ -1934,6 +2629,7 @@ export function mountEditorRuntime(options) {
         roomDetailsElement.innerHTML = "Select a room to view its area and baseboard totals.";
       } else {
         const metrics = computeRoomMetrics(activeRoom, plan, baseboard, metersPerWorldUnit);
+        const roomLighting = computeRoomLightingCounts(activeRoom, plan);
         const displayId = activeRoom.roomId ?? activeRoom.rectangleIds[0] ?? activeRoom.id;
         const displayType = activeRoom.roomId
           ? formatRoomTypeLabel(activeRoom.roomType)
@@ -1945,6 +2641,11 @@ export function mountEditorRuntime(options) {
           `Rectangles: ${activeRoom.rectangleIds.length}<br>` +
           `Area: ${escapeHtmlForOverlay(metrics.areaLabel)}<br>` +
           `Baseboard: ${escapeHtmlForOverlay(metrics.baseboardLabel)}<br>` +
+          `Switches: ${roomLighting.switchCount}<br>` +
+          `Lamps: ${roomLighting.lampCount}<br>` +
+          `Groups: ${roomLighting.groupCount}<br>` +
+          `Links: ${roomLighting.linkCount}<br>` +
+          `Subtypes: ${escapeHtmlForOverlay(formatLightingSubtypeCounts(roomLighting.subtypeCounts) || "none")}<br>` +
           `Color: <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${roomColor(activeRoom.id, 0.9)};"></span>`;
       }
     }
@@ -2039,6 +2740,38 @@ function deriveNextUserRectangleId(plan) {
   let maxNumericId = 0;
   for (const rectangle of plan.entities.rectangles) {
     const match = /^rect_user_(\d+)$/.exec(rectangle.id);
+    if (!match) {
+      continue;
+    }
+    const numericId = Number.parseInt(match[1], 10);
+    if (Number.isFinite(numericId)) {
+      maxNumericId = Math.max(maxNumericId, numericId);
+    }
+  }
+  return maxNumericId + 1;
+}
+
+function deriveNextUserFixtureId(plan) {
+  const fixtures = getLightingCollections(plan).fixtures;
+  let maxNumericId = 0;
+  for (const fixture of fixtures) {
+    const match = /^fx_user_(\d+)$/.exec(fixture?.id);
+    if (!match) {
+      continue;
+    }
+    const numericId = Number.parseInt(match[1], 10);
+    if (Number.isFinite(numericId)) {
+      maxNumericId = Math.max(maxNumericId, numericId);
+    }
+  }
+  return maxNumericId + 1;
+}
+
+function deriveNextUserLightingGroupId(plan) {
+  const groups = getLightingCollections(plan).groups;
+  let maxNumericId = 0;
+  for (const group of groups) {
+    const match = /^lg_user_(\d+)$/.exec(group?.id);
     if (!match) {
       continue;
     }
@@ -2339,6 +3072,422 @@ function computeRoomsAggregateMetrics(roomEntries, plan, baseboard, metersPerWor
       ? `${baseboardWorld.toFixed(1)} wu`
       : `${baseboardMeters.toFixed(2)} m (${baseboardWorld.toFixed(1)} wu)`
   };
+}
+
+function computeLightingTotals(plan) {
+  const lighting = getLightingCollections(plan);
+  let switchCount = 0;
+  let lampCount = 0;
+  const subtypeCounts = {};
+  for (const fixture of lighting.fixtures) {
+    if (fixture?.kind === "switch") {
+      switchCount += 1;
+    } else if (fixture?.kind === "lamp") {
+      lampCount += 1;
+    }
+    const subtype = typeof fixture?.subtype === "string" && fixture.subtype
+      ? fixture.subtype
+      : (fixture?.kind === "switch" ? "switch_single" : "lamp");
+    subtypeCounts[subtype] = (subtypeCounts[subtype] ?? 0) + 1;
+  }
+  return {
+    switchCount,
+    lampCount,
+    groupCount: lighting.groups.length,
+    linkCount: lighting.links.length,
+    subtypeCounts
+  };
+}
+
+function computeRoomLightingCounts(roomEntry, plan) {
+  if (!roomEntry) {
+    return { switchCount: 0, lampCount: 0, groupCount: 0, linkCount: 0, subtypeCounts: {} };
+  }
+
+  const lighting = getLightingCollections(plan);
+  const roomId = normalizeRectangleIdForUi(roomEntry?.roomId);
+  const roomRectangleIdSet = new Set(
+    Array.isArray(roomEntry?.rectangleIds)
+      ? roomEntry.rectangleIds.filter((rectangleId) => typeof rectangleId === "string" && rectangleId)
+      : []
+  );
+  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const fixtureById = new Map(
+    lighting.fixtures
+      .filter((fixture) => typeof fixture?.id === "string" && fixture.id)
+      .map((fixture) => [fixture.id, fixture])
+  );
+  const fixtureIdsInRoom = new Set();
+
+  let switchCount = 0;
+  let lampCount = 0;
+  const subtypeCounts = {};
+  for (const fixture of fixtureById.values()) {
+    if (!isFixtureInRoomEntry(fixture, roomId, roomRectangleIdSet, rectangles)) {
+      continue;
+    }
+    fixtureIdsInRoom.add(fixture.id);
+    if (fixture?.kind === "switch") {
+      switchCount += 1;
+    } else if (fixture?.kind === "lamp") {
+      lampCount += 1;
+    }
+    const subtype = typeof fixture?.subtype === "string" && fixture.subtype
+      ? fixture.subtype
+      : (fixture?.kind === "switch" ? "switch_single" : "lamp");
+    subtypeCounts[subtype] = (subtypeCounts[subtype] ?? 0) + 1;
+  }
+
+  const groupIdsInRoom = new Set();
+  for (const group of lighting.groups) {
+    const groupId = normalizeRectangleIdForUi(group?.id);
+    if (!groupId) {
+      continue;
+    }
+    const groupFixtureIds = Array.isArray(group?.fixtureIds) ? group.fixtureIds : [];
+    const overlapsRoomFixtures = groupFixtureIds.some((fixtureId) => fixtureIdsInRoom.has(fixtureId));
+    if (overlapsRoomFixtures || (roomId && group?.roomId === roomId)) {
+      groupIdsInRoom.add(groupId);
+    }
+  }
+
+  const switchIds = new Set(
+    Array.from(fixtureById.values())
+      .filter((fixture) => fixture?.kind === "switch" && fixtureIdsInRoom.has(fixture.id))
+      .map((fixture) => fixture.id)
+  );
+  let linkCount = 0;
+  for (const link of lighting.links) {
+    const fromSwitchInRoom = switchIds.has(link?.switchId);
+    const toLampInRoom = link?.targetType === "lamp" && fixtureIdsInRoom.has(link?.targetId);
+    const toGroupInRoom = link?.targetType === "lampGroup" && groupIdsInRoom.has(link?.targetId);
+    if (fromSwitchInRoom || toLampInRoom || toGroupInRoom) {
+      linkCount += 1;
+    }
+  }
+
+  return {
+    switchCount,
+    lampCount,
+    groupCount: groupIdsInRoom.size,
+    linkCount,
+    subtypeCounts
+  };
+}
+
+function isFixtureInRoomEntry(fixture, roomId, roomRectangleIdSet, rectangles) {
+  if (!fixture || typeof fixture?.id !== "string" || !fixture.id) {
+    return false;
+  }
+
+  const hostRectangleId = normalizeRectangleIdForUi(fixture?.host?.rectangleId);
+  if (hostRectangleId && roomRectangleIdSet.has(hostRectangleId)) {
+    return true;
+  }
+
+  const fixtureRoomId = normalizeRectangleIdForUi(fixture?.roomId);
+  if (roomId && fixtureRoomId === roomId) {
+    return true;
+  }
+  if (!roomId && fixtureRoomId) {
+    return false;
+  }
+
+  if (Number.isFinite(fixture?.x) && Number.isFinite(fixture?.y)) {
+    const topRectangleAtFixture = findRoomRectangleAtPoint(rectangles, {
+      x: fixture.x,
+      y: fixture.y
+    });
+    if (topRectangleAtFixture && roomRectangleIdSet.has(topRectangleAtFixture.id)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getLightingCollections(plan) {
+  const rawLighting = plan?.entities?.lighting;
+  const fixtures = Array.isArray(rawLighting?.fixtures) ? rawLighting.fixtures : [];
+  const groups = Array.isArray(rawLighting?.groups) ? rawLighting.groups : [];
+  const links = Array.isArray(rawLighting?.links) ? rawLighting.links : [];
+  return { fixtures, groups, links };
+}
+
+function formatLightingOverlaySummary(plan, editorState) {
+  const totals = computeLightingTotals(plan);
+  const selectedFixture = getSelectedLightingFixture(plan, editorState);
+  const linkSwitchId = normalizeRectangleIdForUi(editorState?.lightingSelection?.linkSwitchId);
+  const selectedGroupId = normalizeRectangleIdForUi(editorState?.lightingSelection?.groupId);
+  const linkSourceLabel = linkSwitchId ? `source ${linkSwitchId}` : "source none";
+  const groupLabel = selectedGroupId ? `group ${selectedGroupId}` : "group none";
+  const selectedLabel = selectedFixture ? `${selectedFixture.kind} ${selectedFixture.id}` : "none";
+  return `switches ${totals.switchCount}, lamps ${totals.lampCount}, groups ${totals.groupCount}, links ${totals.linkCount}; subtypes ${formatLightingSubtypeCounts(totals.subtypeCounts) || "none"}; selected ${selectedLabel}; ${linkSourceLabel}; ${groupLabel}`;
+}
+
+function formatLightingSubtypeCounts(subtypeCounts) {
+  const entries = Object.entries(subtypeCounts ?? {})
+    .filter(([, count]) => Number.isFinite(count) && count > 0)
+    .sort((left, right) => left[0].localeCompare(right[0]));
+  if (entries.length === 0) {
+    return "";
+  }
+  return entries.map(([subtype, count]) => `${subtype}:${count}`).join(", ");
+}
+
+function buildPlanExportPayload(plan) {
+  const derivedLighting = deriveLightingSnapshot(plan);
+  const derived = isPlainObjectValue(plan?.derived)
+    ? { ...plan.derived }
+    : {};
+  derived.lighting = derivedLighting;
+  return {
+    ...plan,
+    derived
+  };
+}
+
+function deriveLightingSnapshot(plan) {
+  const lighting = getLightingCollections(plan);
+  const totals = computeLightingTotals(plan);
+  const roomTotals = deriveLightingRoomTotals(plan, lighting);
+  const validation = deriveLightingValidationFindings(plan);
+  return {
+    fixtureCountsBySubtype: totals.subtypeCounts,
+    switchCount: totals.switchCount,
+    lampCount: totals.lampCount,
+    groupCount: totals.groupCount,
+    linkCount: totals.linkCount,
+    roomTotals,
+    warningCount: validation.filter((finding) => finding.severity === "warning").length,
+    findings: validation.map((finding) => ({
+      code: finding.code,
+      severity: finding.severity,
+      message: finding.message,
+      count: finding.count
+    }))
+  };
+}
+
+function deriveLightingRoomTotals(plan, lighting = null) {
+  const collections = lighting ?? getLightingCollections(plan);
+  const rooms = Array.isArray(plan?.entities?.rooms) ? plan.entities.rooms : [];
+  const roomById = new Map(
+    rooms
+      .filter((room) => typeof room?.id === "string" && room.id)
+      .map((room) => [room.id, room])
+  );
+  const roomIds = new Set(
+    collections.fixtures
+      .map((fixture) => normalizeRectangleIdForUi(fixture?.roomId))
+      .filter(Boolean)
+  );
+  const totals = [];
+  for (const roomId of roomIds) {
+    let switchCount = 0;
+    let lampCount = 0;
+    const subtypeCounts = {};
+    for (const fixture of collections.fixtures) {
+      if (fixture?.roomId !== roomId) {
+        continue;
+      }
+      if (fixture.kind === "switch") {
+        switchCount += 1;
+      } else if (fixture.kind === "lamp") {
+        lampCount += 1;
+      }
+      const subtype = typeof fixture?.subtype === "string" && fixture.subtype
+        ? fixture.subtype
+        : (fixture?.kind === "switch" ? "switch_single" : "lamp");
+      subtypeCounts[subtype] = (subtypeCounts[subtype] ?? 0) + 1;
+    }
+    const groupCount = collections.groups.filter((group) => group?.roomId === roomId).length;
+    const switchIds = new Set(
+      collections.fixtures
+        .filter((fixture) => fixture?.kind === "switch" && fixture?.roomId === roomId && typeof fixture?.id === "string")
+        .map((fixture) => fixture.id)
+    );
+    const linkCount = collections.links.filter((link) => switchIds.has(link?.switchId)).length;
+    totals.push({
+      roomId,
+      roomName: roomById.get(roomId)?.name ?? roomId,
+      switchCount,
+      lampCount,
+      groupCount,
+      linkCount,
+      fixtureCountsBySubtype: subtypeCounts
+    });
+  }
+  totals.sort((left, right) => left.roomName.localeCompare(right.roomName, undefined, { sensitivity: "base" }));
+  return totals;
+}
+
+function deriveLightingValidationFindings(plan) {
+  const lighting = getLightingCollections(plan);
+  if (lighting.fixtures.length === 0 && lighting.groups.length === 0 && lighting.links.length === 0) {
+    return [];
+  }
+
+  const fixtureById = new Map(
+    lighting.fixtures
+      .filter((fixture) => typeof fixture?.id === "string" && fixture.id)
+      .map((fixture) => [fixture.id, fixture])
+  );
+  const groupById = new Map(
+    lighting.groups
+      .filter((group) => typeof group?.id === "string" && group.id)
+      .map((group) => [group.id, group])
+  );
+  const rectangleById = new Map(
+    (Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [])
+      .filter((rectangle) => typeof rectangle?.id === "string" && rectangle.id)
+      .map((rectangle) => [rectangle.id, rectangle])
+  );
+
+  const findings = [];
+  const danglingGroupLampCount = countDanglingGroupLampReferences(lighting.groups, fixtureById);
+  if (danglingGroupLampCount > 0) {
+    findings.push({
+      code: "lighting_group_dangling_lamp",
+      severity: "warning",
+      message: `${danglingGroupLampCount} invalid lamp reference${danglingGroupLampCount === 1 ? "" : "s"} in lighting groups`,
+      count: danglingGroupLampCount
+    });
+  }
+
+  const danglingLinksCount = countDanglingLightingLinks(lighting.links, fixtureById, groupById);
+  if (danglingLinksCount > 0) {
+    findings.push({
+      code: "lighting_link_dangling_target",
+      severity: "warning",
+      message: `${danglingLinksCount} invalid switch link${danglingLinksCount === 1 ? "" : "s"}`,
+      count: danglingLinksCount
+    });
+  }
+
+  const invalidSwitchHostCount = countInvalidSwitchHosts(lighting.fixtures, rectangleById);
+  if (invalidSwitchHostCount > 0) {
+    findings.push({
+      code: "lighting_switch_host_invalid",
+      severity: "warning",
+      message: `${invalidSwitchHostCount} switch fixture${invalidSwitchHostCount === 1 ? "" : "s"} with invalid wall host`,
+      count: invalidSwitchHostCount
+    });
+  }
+
+  const driftedSwitchCount = countSwitchHostDrift(lighting.fixtures, rectangleById);
+  if (driftedSwitchCount > 0) {
+    findings.push({
+      code: "lighting_switch_host_drift",
+      severity: "warning",
+      message: `${driftedSwitchCount} switch fixture${driftedSwitchCount === 1 ? "" : "s"} drifted from host wall`,
+      count: driftedSwitchCount
+    });
+  }
+
+  return findings;
+}
+
+function countDanglingGroupLampReferences(groups, fixtureById) {
+  if (!Array.isArray(groups) || !(fixtureById instanceof Map)) {
+    return 0;
+  }
+  let count = 0;
+  for (const group of groups) {
+    const fixtureIds = Array.isArray(group?.fixtureIds) ? group.fixtureIds : [];
+    for (const fixtureId of fixtureIds) {
+      const fixture = fixtureById.get(fixtureId);
+      if (!fixture || fixture.kind !== "lamp") {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function countDanglingLightingLinks(links, fixtureById, groupById) {
+  if (!Array.isArray(links) || !(fixtureById instanceof Map) || !(groupById instanceof Map)) {
+    return 0;
+  }
+  let count = 0;
+  for (const link of links) {
+    const switchFixture = fixtureById.get(link?.switchId);
+    if (!switchFixture || switchFixture.kind !== "switch") {
+      count += 1;
+      continue;
+    }
+    if (link?.targetType === "lamp") {
+      const targetLamp = fixtureById.get(link?.targetId);
+      if (!targetLamp || targetLamp.kind !== "lamp") {
+        count += 1;
+      }
+      continue;
+    }
+    if (link?.targetType === "lampGroup") {
+      if (!groupById.has(link?.targetId)) {
+        count += 1;
+      }
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function countInvalidSwitchHosts(fixtures, rectangleById) {
+  if (!Array.isArray(fixtures) || !(rectangleById instanceof Map)) {
+    return 0;
+  }
+  let count = 0;
+  for (const fixture of fixtures) {
+    if (fixture?.kind !== "switch") {
+      continue;
+    }
+    const host = fixture.host;
+    const rectangleId = normalizeRectangleIdForUi(host?.rectangleId);
+    const side = host?.side;
+    const offset = host?.offset;
+    if (
+      host?.type !== "wallSide" ||
+      !rectangleId ||
+      !rectangleById.has(rectangleId) ||
+      (side !== "top" && side !== "right" && side !== "bottom" && side !== "left") ||
+      !Number.isFinite(offset)
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function countSwitchHostDrift(fixtures, rectangleById, tolerance = 1) {
+  if (!Array.isArray(fixtures) || !(rectangleById instanceof Map)) {
+    return 0;
+  }
+  let count = 0;
+  for (const fixture of fixtures) {
+    if (fixture?.kind !== "switch" || fixture?.host?.type !== "wallSide") {
+      continue;
+    }
+    const rectangleId = normalizeRectangleIdForUi(fixture.host.rectangleId);
+    const rectangle = rectangleId ? rectangleById.get(rectangleId) : null;
+    if (!rectangle) {
+      continue;
+    }
+    const projected = projectSwitchFixtureToHostPosition(rectangle, fixture.host.side, fixture.host.offset);
+    if (!projected) {
+      continue;
+    }
+    const distance = Math.hypot(projected.x - fixture.x, projected.y - fixture.y);
+    if (distance > tolerance) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function isPlainObjectValue(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
 function formatSelectedRectangleWallCmStatus(rectangle) {
@@ -3382,6 +4531,23 @@ function getSelectedRectangle(plan, editorState) {
   return plan.entities.rectangles.find((rectangle) => rectangle.id === selectedId) ?? null;
 }
 
+function getSelectedLightingFixture(plan, editorState) {
+  const fixtureId = normalizeRectangleIdForUi(editorState?.lightingSelection?.fixtureId);
+  if (!fixtureId) {
+    return null;
+  }
+  return getLightingFixtureById(plan, fixtureId);
+}
+
+function getLightingFixtureById(plan, fixtureId) {
+  const normalizedFixtureId = normalizeRectangleIdForUi(fixtureId);
+  if (!normalizedFixtureId) {
+    return null;
+  }
+  const fixtures = getLightingCollections(plan).fixtures;
+  return fixtures.find((fixture) => fixture?.id === normalizedFixtureId) ?? null;
+}
+
 function getRoomForRectangle(plan, rectangle) {
   const roomId = rectangle?.roomId;
   if (typeof roomId !== "string" || !roomId) {
@@ -3603,6 +4769,401 @@ function drawDebugRectangles(
 
     ctx.restore();
   }
+}
+
+function drawLightingLinks(ctx, plan, editorState, camera) {
+  const lighting = getLightingCollections(plan);
+  if (lighting.links.length === 0 || lighting.fixtures.length === 0) {
+    return;
+  }
+
+  const fixtureById = new Map(
+    lighting.fixtures
+      .filter((fixture) => typeof fixture?.id === "string" && fixture.id)
+      .map((fixture) => [fixture.id, fixture])
+  );
+  const activeSwitchId = normalizeRectangleIdForUi(editorState?.lightingSelection?.linkSwitchId);
+
+  ctx.save();
+  ctx.lineWidth = 1.6 / camera.zoom;
+  const switchStatesById = isPlainObjectValue(editorState?.lightingPreview?.switchStatesById)
+    ? editorState.lightingPreview.switchStatesById
+    : {};
+  for (const link of lighting.links) {
+    const switchFixture = fixtureById.get(link?.switchId);
+    if (!switchFixture || switchFixture.kind !== "switch") {
+      continue;
+    }
+    const targets = resolveLightingLinkTargetPoints(link, fixtureById, lighting.groups);
+    if (targets.length === 0) {
+      continue;
+    }
+
+    const isActive = activeSwitchId != null && switchFixture.id === activeSwitchId;
+    const switchOn = switchStatesById[switchFixture.id] !== false;
+    ctx.strokeStyle = switchOn
+      ? (isActive ? "rgba(204, 91, 0, 0.98)" : "rgba(145, 92, 44, 0.58)")
+      : "rgba(135, 135, 135, 0.48)";
+    ctx.setLineDash(isActive ? [] : [7 / camera.zoom, 6 / camera.zoom]);
+    for (const target of targets) {
+      ctx.beginPath();
+      ctx.moveTo(switchFixture.x, switchFixture.y);
+      ctx.lineTo(target.x, target.y);
+      ctx.stroke();
+    }
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function resolveLightingLinkTargetPoints(link, fixtureById, groups) {
+  if (!link || !(fixtureById instanceof Map)) {
+    return [];
+  }
+  if (link.targetType === "lamp") {
+    const lamp = fixtureById.get(link.targetId);
+    if (!lamp || lamp.kind !== "lamp") {
+      return [];
+    }
+    return [{ x: lamp.x, y: lamp.y }];
+  }
+  if (link.targetType !== "lampGroup") {
+    return [];
+  }
+
+  const group = Array.isArray(groups)
+    ? groups.find((candidate) => candidate?.id === link.targetId) ?? null
+    : null;
+  if (!group) {
+    return [];
+  }
+  const fixtureIds = Array.isArray(group.fixtureIds) ? group.fixtureIds : [];
+  const targets = [];
+  for (const fixtureId of fixtureIds) {
+    const lamp = fixtureById.get(fixtureId);
+    if (!lamp || lamp.kind !== "lamp") {
+      continue;
+    }
+    targets.push({ x: lamp.x, y: lamp.y });
+  }
+  return targets;
+}
+
+function drawLightingFixtures(ctx, plan, editorState, camera) {
+  const lighting = getLightingCollections(plan);
+  if (lighting.fixtures.length === 0) {
+    return;
+  }
+  const selectedFixtureId = normalizeRectangleIdForUi(editorState?.lightingSelection?.fixtureId);
+  const linkSwitchId = normalizeRectangleIdForUi(editorState?.lightingSelection?.linkSwitchId);
+  const switchStatesById = isPlainObjectValue(editorState?.lightingPreview?.switchStatesById)
+    ? editorState.lightingPreview.switchStatesById
+    : {};
+  const lampPowerById = deriveLampPowerStateByLampId(lighting, switchStatesById);
+
+  for (const fixture of lighting.fixtures) {
+    if (!Number.isFinite(fixture?.x) || !Number.isFinite(fixture?.y)) {
+      continue;
+    }
+    const isSelected = fixture.id === selectedFixtureId;
+    const isLinkSwitch = fixture.id === linkSwitchId;
+    const radius = fixture.kind === "switch"
+      ? FIXTURE_SWITCH_RADIUS_WORLD / camera.zoom
+      : FIXTURE_LAMP_RADIUS_WORLD / camera.zoom;
+
+    ctx.save();
+    if (fixture.kind === "switch") {
+      const switchOn = switchStatesById[fixture.id] !== false;
+      ctx.fillStyle = switchOn
+        ? (isLinkSwitch ? "rgba(207, 106, 19, 0.98)" : "rgba(176, 106, 40, 0.95)")
+        : "rgba(136, 136, 136, 0.9)";
+      ctx.strokeStyle = isSelected ? "rgba(35, 85, 235, 0.98)" : "rgba(77, 46, 13, 0.98)";
+      ctx.lineWidth = isSelected ? 2.2 / camera.zoom : 1.5 / camera.zoom;
+      ctx.fillRect(fixture.x - radius, fixture.y - radius, radius * 2, radius * 2);
+      ctx.strokeRect(fixture.x - radius, fixture.y - radius, radius * 2, radius * 2);
+    } else {
+      const lampOn = lampPowerById.get(fixture.id) !== false;
+      ctx.fillStyle = lampOn ? "rgba(245, 219, 76, 0.96)" : "rgba(167, 167, 167, 0.78)";
+      ctx.strokeStyle = isSelected ? "rgba(35, 85, 235, 0.98)" : "rgba(107, 90, 16, 0.98)";
+      ctx.lineWidth = isSelected ? 2.2 / camera.zoom : 1.3 / camera.zoom;
+      ctx.beginPath();
+      ctx.arc(fixture.x, fixture.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    if (isSelected) {
+      ctx.strokeStyle = "rgba(35, 85, 235, 0.38)";
+      ctx.lineWidth = 4 / camera.zoom;
+      ctx.beginPath();
+      ctx.arc(fixture.x, fixture.y, radius + 5 / camera.zoom, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function deriveLampPowerStateByLampId(lighting, switchStatesById) {
+  const fixtureById = new Map(
+    lighting.fixtures
+      .filter((fixture) => typeof fixture?.id === "string" && fixture.id)
+      .map((fixture) => [fixture.id, fixture])
+  );
+  const lampIds = new Set(
+    lighting.fixtures
+      .filter((fixture) => fixture?.kind === "lamp" && typeof fixture?.id === "string" && fixture.id)
+      .map((fixture) => fixture.id)
+  );
+  const groupById = new Map(
+    lighting.groups
+      .filter((group) => typeof group?.id === "string" && group.id)
+      .map((group) => [group.id, group])
+  );
+  const controllingSwitchIdsByLampId = new Map(
+    Array.from(lampIds).map((lampId) => [lampId, new Set()])
+  );
+
+  for (const link of lighting.links) {
+    const switchId = normalizeRectangleIdForUi(link?.switchId);
+    if (!switchId) {
+      continue;
+    }
+    const switchFixture = fixtureById.get(switchId);
+    if (!switchFixture || switchFixture.kind !== "switch") {
+      continue;
+    }
+    if (link?.targetType === "lamp") {
+      const lampId = normalizeRectangleIdForUi(link?.targetId);
+      if (lampId && controllingSwitchIdsByLampId.has(lampId)) {
+        controllingSwitchIdsByLampId.get(lampId).add(switchId);
+      }
+      continue;
+    }
+    if (link?.targetType === "lampGroup") {
+      const groupId = normalizeRectangleIdForUi(link?.targetId);
+      const group = groupId ? groupById.get(groupId) : null;
+      if (!group) {
+        continue;
+      }
+      const fixtureIds = Array.isArray(group.fixtureIds) ? group.fixtureIds : [];
+      for (const fixtureId of fixtureIds) {
+        const lampId = normalizeRectangleIdForUi(fixtureId);
+        if (lampId && controllingSwitchIdsByLampId.has(lampId)) {
+          controllingSwitchIdsByLampId.get(lampId).add(switchId);
+        }
+      }
+    }
+  }
+
+  const lampPower = new Map();
+  for (const lampId of lampIds) {
+    const controllers = controllingSwitchIdsByLampId.get(lampId) ?? new Set();
+    if (controllers.size === 0) {
+      lampPower.set(lampId, true);
+      continue;
+    }
+    const anyOn = Array.from(controllers).some((switchId) => switchStatesById[switchId] !== false);
+    lampPower.set(lampId, anyOn);
+  }
+  return lampPower;
+}
+
+function hitTestLightingFixtures(plan, worldPoint, zoom) {
+  const lighting = getLightingCollections(plan);
+  if (lighting.fixtures.length === 0) {
+    return null;
+  }
+  const hitRadiusWorld = FIXTURE_HIT_RADIUS_PX / Math.max(0.2, zoom);
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const fixture of lighting.fixtures) {
+    if (!Number.isFinite(fixture?.x) || !Number.isFinite(fixture?.y)) {
+      continue;
+    }
+    const distance = Math.hypot(worldPoint.x - fixture.x, worldPoint.y - fixture.y);
+    if (distance <= hitRadiusWorld && distance < bestDistance) {
+      best = fixture;
+      bestDistance = distance;
+    }
+  }
+  if (!best) {
+    return null;
+  }
+  return { fixture: best, distanceWorld: bestDistance };
+}
+
+function deriveSwitchPlacementAtPoint(plan, worldPoint, selectedRectangleId = null) {
+  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const selectedRectangle = rectangles.find((rectangle) => rectangle?.id === selectedRectangleId) ?? null;
+  const hitRectangle = findRoomRectangleAtPoint(rectangles, worldPoint);
+  const hostRectangle = hitRectangle ?? selectedRectangle;
+  if (!hostRectangle || hostRectangle.kind === "wallRect") {
+    return null;
+  }
+  const projection = projectPointToRectangleSide(hostRectangle, worldPoint);
+  if (!projection) {
+    return null;
+  }
+  return {
+    x: projection.x,
+    y: projection.y,
+    roomId: normalizeRectangleIdForUi(hostRectangle.roomId),
+    host: {
+      type: "wallSide",
+      rectangleId: hostRectangle.id,
+      side: projection.side,
+      offset: projection.offset
+    }
+  };
+}
+
+function projectPointToSwitchHostSide(plan, host, point) {
+  const rectangleId = normalizeRectangleIdForUi(host?.rectangleId);
+  const side = host?.side;
+  if (!rectangleId || (side !== "top" && side !== "right" && side !== "bottom" && side !== "left")) {
+    return null;
+  }
+  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const rectangle = rectangles.find((candidate) => candidate?.id === rectangleId) ?? null;
+  if (!rectangle || rectangle.kind === "wallRect") {
+    return null;
+  }
+
+  if (side === "top" || side === "bottom") {
+    const x = clampScreenValue(point.x, rectangle.x, rectangle.x + rectangle.w);
+    const y = side === "top" ? rectangle.y : rectangle.y + rectangle.h;
+    const offset = rectangle.w > 0 ? (x - rectangle.x) / rectangle.w : 0;
+    return { x, y, host: { type: "wallSide", rectangleId, side, offset } };
+  }
+
+  const y = clampScreenValue(point.y, rectangle.y, rectangle.y + rectangle.h);
+  const x = side === "left" ? rectangle.x : rectangle.x + rectangle.w;
+  const offset = rectangle.h > 0 ? (y - rectangle.y) / rectangle.h : 0;
+  return { x, y, host: { type: "wallSide", rectangleId, side, offset } };
+}
+
+function projectSwitchFixtureToHostPosition(rectangle, side, rawOffset) {
+  if (
+    !rectangle ||
+    !Number.isFinite(rectangle.x) ||
+    !Number.isFinite(rectangle.y) ||
+    !Number.isFinite(rectangle.w) ||
+    !Number.isFinite(rectangle.h) ||
+    rectangle.w <= 0 ||
+    rectangle.h <= 0
+  ) {
+    return null;
+  }
+  const offset = Number.isFinite(rawOffset) ? Math.min(1, Math.max(0, rawOffset)) : null;
+  if (offset == null) {
+    return null;
+  }
+  if (side === "top" || side === "bottom") {
+    return {
+      x: rectangle.x + rectangle.w * offset,
+      y: side === "top" ? rectangle.y : rectangle.y + rectangle.h
+    };
+  }
+  if (side === "left" || side === "right") {
+    return {
+      x: side === "left" ? rectangle.x : rectangle.x + rectangle.w,
+      y: rectangle.y + rectangle.h * offset
+    };
+  }
+  return null;
+}
+
+function projectPointToRectangleSide(rectangle, point) {
+  if (!rectangle || rectangle.kind === "wallRect") {
+    return null;
+  }
+  const x = point.x;
+  const y = point.y;
+  const leftDistance = Math.abs(x - rectangle.x);
+  const rightDistance = Math.abs(x - (rectangle.x + rectangle.w));
+  const topDistance = Math.abs(y - rectangle.y);
+  const bottomDistance = Math.abs(y - (rectangle.y + rectangle.h));
+  const minimum = Math.min(leftDistance, rightDistance, topDistance, bottomDistance);
+
+  if (minimum === topDistance) {
+    const projectedX = clampScreenValue(x, rectangle.x, rectangle.x + rectangle.w);
+    return {
+      side: "top",
+      x: projectedX,
+      y: rectangle.y,
+      offset: rectangle.w > 0 ? (projectedX - rectangle.x) / rectangle.w : 0
+    };
+  }
+  if (minimum === bottomDistance) {
+    const projectedX = clampScreenValue(x, rectangle.x, rectangle.x + rectangle.w);
+    return {
+      side: "bottom",
+      x: projectedX,
+      y: rectangle.y + rectangle.h,
+      offset: rectangle.w > 0 ? (projectedX - rectangle.x) / rectangle.w : 0
+    };
+  }
+  if (minimum === leftDistance) {
+    const projectedY = clampScreenValue(y, rectangle.y, rectangle.y + rectangle.h);
+    return {
+      side: "left",
+      x: rectangle.x,
+      y: projectedY,
+      offset: rectangle.h > 0 ? (projectedY - rectangle.y) / rectangle.h : 0
+    };
+  }
+  const projectedY = clampScreenValue(y, rectangle.y, rectangle.y + rectangle.h);
+  return {
+    side: "right",
+    x: rectangle.x + rectangle.w,
+    y: projectedY,
+    offset: rectangle.h > 0 ? (projectedY - rectangle.y) / rectangle.h : 0
+  };
+}
+
+function findRoomRectangleAtPoint(rectangles, worldPoint) {
+  if (!Array.isArray(rectangles)) {
+    return null;
+  }
+  for (let index = rectangles.length - 1; index >= 0; index -= 1) {
+    const rectangle = rectangles[index];
+    if (!rectangle || rectangle.kind === "wallRect") {
+      continue;
+    }
+    if (
+      worldPoint.x >= rectangle.x &&
+      worldPoint.x <= rectangle.x + rectangle.w &&
+      worldPoint.y >= rectangle.y &&
+      worldPoint.y <= rectangle.y + rectangle.h
+    ) {
+      return rectangle;
+    }
+  }
+  return null;
+}
+
+function deriveRoomIdFromPoint(plan, worldPoint) {
+  const rectangle = findRoomRectangleAtPoint(plan?.entities?.rectangles, worldPoint);
+  return normalizeRectangleIdForUi(rectangle?.roomId);
+}
+
+function deriveLampInteriorHostFromRectangle(rectangle, point) {
+  if (
+    !rectangle ||
+    rectangle.kind === "wallRect" ||
+    !Number.isFinite(point?.x) ||
+    !Number.isFinite(point?.y)
+  ) {
+    return {
+      type: "roomInterior"
+    };
+  }
+  return {
+    type: "roomInterior",
+    rectangleId: rectangle.id,
+    offsetX: point.x - rectangle.x,
+    offsetY: point.y - rectangle.y
+  };
 }
 
 function strokeRectSides(ctx, rect, visibleSides = null, hiddenIntervalsBySide = null) {

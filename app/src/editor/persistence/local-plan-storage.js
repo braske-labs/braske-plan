@@ -227,7 +227,8 @@ function migratePlan(raw) {
     entities: {
       rectangles: normalizeRectangles(entities.rectangles),
       openings: Array.isArray(entities.openings) ? entities.openings.slice() : [],
-      rooms: normalizeRooms(entities.rooms)
+      rooms: normalizeRooms(entities.rooms),
+      lighting: normalizeLighting(entities.lighting)
     }
   };
 }
@@ -337,6 +338,200 @@ function normalizeRooms(rawRooms) {
   return result;
 }
 
+function normalizeLighting(rawLighting) {
+  const lighting = isPlainObject(rawLighting) ? rawLighting : {};
+  const fixtures = normalizeLightingFixtures(lighting.fixtures);
+  const groups = normalizeLightingGroups(lighting.groups, fixtures);
+  const links = normalizeLightingLinks(lighting.links, fixtures, groups);
+  return { fixtures, groups, links };
+}
+
+function normalizeLightingFixtures(rawFixtures) {
+  if (!Array.isArray(rawFixtures)) {
+    return [];
+  }
+
+  const fixtures = [];
+  for (let index = 0; index < rawFixtures.length; index += 1) {
+    const rawFixture = rawFixtures[index];
+    if (!isPlainObject(rawFixture)) {
+      continue;
+    }
+    const id = normalizeNonEmptyString(rawFixture.id) ?? `fx_migrated_${index + 1}`;
+    const kind = rawFixture.kind === "switch" || rawFixture.kind === "lamp"
+      ? rawFixture.kind
+      : null;
+    const x = finiteNumber(rawFixture.x, null);
+    const y = finiteNumber(rawFixture.y, null);
+    if (!kind || x == null || y == null) {
+      continue;
+    }
+    const subtype = normalizeNonEmptyString(rawFixture.subtype) ?? (kind === "switch" ? "switch_single" : "led_spot");
+    const roomId = normalizeNonEmptyString(rawFixture.roomId);
+    const host = normalizeLightingFixtureHost(rawFixture.host, kind);
+    if (!host) {
+      continue;
+    }
+    const label = normalizeNonEmptyString(rawFixture?.meta?.label);
+    fixtures.push({
+      id,
+      kind,
+      subtype,
+      x,
+      y,
+      roomId: roomId ?? null,
+      host,
+      meta: {
+        label: label ?? null
+      }
+    });
+  }
+  return fixtures;
+}
+
+function normalizeLightingFixtureHost(rawHost, kind) {
+  if (kind === "switch") {
+    if (!isPlainObject(rawHost) || rawHost.type !== "wallSide") {
+      return null;
+    }
+    const rectangleId = normalizeNonEmptyString(rawHost.rectangleId);
+    const side = rawHost.side;
+    if (
+      !rectangleId ||
+      (side !== "top" && side !== "right" && side !== "bottom" && side !== "left")
+    ) {
+      return null;
+    }
+    const offset = clampNumber(rawHost.offset, 0, 1, null);
+    if (offset == null) {
+      return null;
+    }
+    return {
+      type: "wallSide",
+      rectangleId,
+      side,
+      offset
+    };
+  }
+  if (!isPlainObject(rawHost) || rawHost.type !== "roomInterior") {
+    return {
+      type: "roomInterior",
+      rectangleId: null,
+      offsetX: null,
+      offsetY: null
+    };
+  }
+  const rectangleId = normalizeNonEmptyString(rawHost.rectangleId);
+  const offsetX = finiteNumber(rawHost.offsetX, null);
+  const offsetY = finiteNumber(rawHost.offsetY, null);
+  return {
+    type: "roomInterior",
+    rectangleId: rectangleId ?? null,
+    offsetX,
+    offsetY
+  };
+}
+
+function normalizeLightingGroups(rawGroups, fixtures) {
+  if (!Array.isArray(rawGroups)) {
+    return [];
+  }
+
+  const lampFixtureIds = new Set(
+    fixtures
+      .filter((fixture) => fixture?.kind === "lamp")
+      .map((fixture) => fixture.id)
+  );
+  const groups = [];
+  for (let index = 0; index < rawGroups.length; index += 1) {
+    const rawGroup = rawGroups[index];
+    if (!isPlainObject(rawGroup)) {
+      continue;
+    }
+    const id = normalizeNonEmptyString(rawGroup.id) ?? `lg_migrated_${index + 1}`;
+    const name = normalizeNonEmptyString(rawGroup.name) ?? `Lamp Group ${index + 1}`;
+    const roomId = normalizeNonEmptyString(rawGroup.roomId);
+    const fixtureIds = Array.isArray(rawGroup.fixtureIds)
+      ? Array.from(
+        new Set(
+          rawGroup.fixtureIds
+            .map((fixtureId) => normalizeNonEmptyString(fixtureId))
+            .filter((fixtureId) => fixtureId && lampFixtureIds.has(fixtureId))
+        )
+      )
+      : [];
+    if (fixtureIds.length === 0) {
+      continue;
+    }
+    groups.push({
+      id,
+      kind: "lampGroup",
+      name,
+      roomId: roomId ?? null,
+      fixtureIds,
+      meta: isPlainObject(rawGroup.meta) ? rawGroup.meta : {}
+    });
+  }
+  return groups;
+}
+
+function normalizeLightingLinks(rawLinks, fixtures, groups) {
+  if (!Array.isArray(rawLinks)) {
+    return [];
+  }
+  const switchIds = new Set(
+    fixtures
+      .filter((fixture) => fixture?.kind === "switch")
+      .map((fixture) => fixture.id)
+  );
+  const lampIds = new Set(
+    fixtures
+      .filter((fixture) => fixture?.kind === "lamp")
+      .map((fixture) => fixture.id)
+  );
+  const groupIds = new Set(
+    groups
+      .filter((group) => typeof group?.id === "string" && group.id)
+      .map((group) => group.id)
+  );
+  const dedupeKey = new Set();
+  const links = [];
+
+  for (let index = 0; index < rawLinks.length; index += 1) {
+    const rawLink = rawLinks[index];
+    if (!isPlainObject(rawLink)) {
+      continue;
+    }
+    const switchId = normalizeNonEmptyString(rawLink.switchId);
+    const targetType = rawLink.targetType === "lamp" || rawLink.targetType === "lampGroup"
+      ? rawLink.targetType
+      : null;
+    const targetId = normalizeNonEmptyString(rawLink.targetId);
+    if (!switchId || !targetType || !targetId || !switchIds.has(switchId)) {
+      continue;
+    }
+    if (targetType === "lamp" && !lampIds.has(targetId)) {
+      continue;
+    }
+    if (targetType === "lampGroup" && !groupIds.has(targetId)) {
+      continue;
+    }
+    const edgeKey = `${switchId}|${targetType}|${targetId}`;
+    if (dedupeKey.has(edgeKey)) {
+      continue;
+    }
+    dedupeKey.add(edgeKey);
+    links.push({
+      id: normalizeNonEmptyString(rawLink.id) ?? `lk_migrated_${index + 1}`,
+      switchId,
+      targetType,
+      targetId
+    });
+  }
+
+  return links;
+}
+
 function getLocalStorage() {
   try {
     if (typeof window === "undefined" || !window.localStorage) {
@@ -376,4 +571,12 @@ function clampNumber(value, min, max, fallback) {
     return fallback;
   }
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeNonEmptyString(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized ? normalized : null;
 }

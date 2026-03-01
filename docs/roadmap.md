@@ -43,7 +43,18 @@ Definition of done:
 - Local JSON price catalog used to compute a cost estimate from quantities.
 - UI shows quantities + unit prices + totals (transparent math).
 
-## Milestone 7: Export/report (optional)
+## Milestone 7: Paint estimate inputs
+Definition of done:
+- Plan has wall-height input.
+- Paintable wall area is computed from perimeter segments with exclusions.
+- Room-level and plan-level paint area totals are visible.
+
+## Milestone 8: Lighting inventory (quantity-only v1)
+Definition of done:
+- Switches/lamps can be placed and assigned to rooms.
+- Room-level + total fixture counts are visible and persisted.
+
+## Milestone 9: Export/report (optional)
 Definition of done:
 - Export plan JSON.
 - Export a simple report view (print/PDF later).

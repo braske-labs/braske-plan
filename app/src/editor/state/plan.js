@@ -40,7 +40,12 @@ export function createEmptyPlan() {
     entities: {
       rectangles: [],
       openings: [],
-      rooms: []
+      rooms: [],
+      lighting: {
+        fixtures: [],
+        groups: [],
+        links: []
+      }
     }
   };
 }
@@ -168,6 +173,7 @@ export function planReducer(plan, action) {
       const nextRectangles = plan.entities.rectangles.filter((rectangle) => rectangle.id !== deletedRectangleId);
       const nextRooms = cleanupRoomsAfterRectangleDelete(plan.entities.rooms, deletedRectangleId);
       const nextOpenings = cleanupOpeningsAfterRectangleDelete(plan.entities.openings, deletedRectangleId);
+      const nextLighting = cleanupLightingAfterRectangleDelete(plan.entities.lighting, deletedRectangleId);
 
       return stampPlan({
         ...plan,
@@ -175,7 +181,8 @@ export function planReducer(plan, action) {
           ...plan.entities,
           rectangles: nextRectangles,
           openings: nextOpenings,
-          rooms: nextRooms
+          rooms: nextRooms,
+          lighting: nextLighting
         }
       });
     }
@@ -197,12 +204,18 @@ export function planReducer(plan, action) {
         x: action.x,
         y: action.y
       };
+      const nextLighting = applyLightingFixtureGeometryAfterRectanglesChanged(
+        plan.entities.lighting,
+        plan.entities.rectangles,
+        nextRectangles
+      );
 
       return stampPlan({
         ...plan,
         entities: {
           ...plan.entities,
-          rectangles: nextRectangles
+          rectangles: nextRectangles,
+          lighting: nextLighting
         }
       });
     }
@@ -231,12 +244,18 @@ export function planReducer(plan, action) {
         w: action.w,
         h: action.h
       };
+      const nextLighting = applyLightingFixtureGeometryAfterRectanglesChanged(
+        plan.entities.lighting,
+        plan.entities.rectangles,
+        nextRectangles
+      );
 
       return stampPlan({
         ...plan,
         entities: {
           ...plan.entities,
-          rectangles: nextRectangles
+          rectangles: nextRectangles,
+          lighting: nextLighting
         }
       });
     }
@@ -309,12 +328,18 @@ export function planReducer(plan, action) {
       if (!changed) {
         return plan;
       }
+      const nextLighting = applyLightingFixtureGeometryAfterRectanglesChanged(
+        plan.entities.lighting,
+        plan.entities.rectangles,
+        nextRectangles
+      );
 
       return stampPlan({
         ...plan,
         entities: {
           ...plan.entities,
-          rectangles: nextRectangles
+          rectangles: nextRectangles,
+          lighting: nextLighting
         }
       });
     }
@@ -589,13 +614,364 @@ export function planReducer(plan, action) {
           : rectangle
       ));
       const nextRooms = plan.entities.rooms.filter((candidate) => candidate?.id !== roomId);
+      const nextLighting = clearLightingRoomAssignment(plan.entities.lighting, roomId);
 
       return stampPlan({
         ...plan,
         entities: {
           ...plan.entities,
           rectangles: nextRectangles,
-          rooms: nextRooms
+          rooms: nextRooms,
+          lighting: nextLighting
+        }
+      });
+    }
+
+    case "plan/lighting/addFixture": {
+      const fixtureId = normalizeNonEmptyString(action.fixtureId);
+      const fixtureKind = normalizeLightingFixtureKind(action.kind);
+      const x = finiteNumberOrNull(action.x);
+      const y = finiteNumberOrNull(action.y);
+      if (!fixtureId || !fixtureKind || x == null || y == null) {
+        return plan;
+      }
+
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const fixtureExists = lighting.fixtures.some((fixture) => fixture?.id === fixtureId);
+      if (fixtureExists) {
+        return plan;
+      }
+
+      const subtype = normalizeLightingFixtureSubtype(action.subtype, fixtureKind);
+      const roomId = normalizeNonEmptyString(action.roomId);
+      const host = normalizeLightingFixtureHost(action.host, fixtureKind);
+      const label = normalizeLightingFixtureLabel(action.label);
+
+      const nextFixture = {
+        id: fixtureId,
+        kind: fixtureKind,
+        subtype,
+        x,
+        y,
+        roomId: roomId ?? null,
+        host,
+        meta: {
+          label
+        }
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            fixtures: [...lighting.fixtures, nextFixture]
+          }
+        }
+      });
+    }
+
+    case "plan/lighting/moveFixture": {
+      const fixtureId = normalizeNonEmptyString(action.fixtureId);
+      if (!fixtureId) {
+        return plan;
+      }
+
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const fixtureIndex = lighting.fixtures.findIndex((fixture) => fixture?.id === fixtureId);
+      if (fixtureIndex < 0) {
+        return plan;
+      }
+
+      const current = lighting.fixtures[fixtureIndex];
+      const x = finiteNumberOrNull(action.x);
+      const y = finiteNumberOrNull(action.y);
+      if (x == null || y == null) {
+        return plan;
+      }
+
+      const roomId = action.roomId === undefined
+        ? current.roomId ?? null
+        : normalizeNonEmptyString(action.roomId);
+      const host = action.host === undefined
+        ? current.host
+        : normalizeLightingFixtureHost(action.host, current.kind);
+      if (!host) {
+        return plan;
+      }
+
+      if (
+        current.x === x &&
+        current.y === y &&
+        (current.roomId ?? null) === (roomId ?? null) &&
+        areLightingHostsEqual(current.host, host)
+      ) {
+        return plan;
+      }
+
+      const nextFixtures = lighting.fixtures.slice();
+      nextFixtures[fixtureIndex] = {
+        ...current,
+        x,
+        y,
+        roomId: roomId ?? null,
+        host
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            fixtures: nextFixtures
+          }
+        }
+      });
+    }
+
+    case "plan/lighting/deleteFixture": {
+      const fixtureId = normalizeNonEmptyString(action.fixtureId);
+      if (!fixtureId) {
+        return plan;
+      }
+
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const fixtureExists = lighting.fixtures.some((fixture) => fixture?.id === fixtureId);
+      if (!fixtureExists) {
+        return plan;
+      }
+
+      const nextLighting = cleanupLightingAfterFixtureDelete(lighting, fixtureId);
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: nextLighting
+        }
+      });
+    }
+
+    case "plan/lighting/linkSwitch": {
+      const switchId = normalizeNonEmptyString(action.switchId);
+      const targetType = normalizeLightingLinkTargetType(action.targetType);
+      const targetId = normalizeNonEmptyString(action.targetId);
+      if (!switchId || !targetType || !targetId) {
+        return plan;
+      }
+
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      if (!hasLightingFixture(lighting.fixtures, switchId, "switch")) {
+        return plan;
+      }
+
+      const targetExists = targetType === "lamp"
+        ? hasLightingFixture(lighting.fixtures, targetId, "lamp")
+        : hasLightingGroup(lighting.groups, targetId);
+      if (!targetExists) {
+        return plan;
+      }
+
+      const duplicate = lighting.links.some((link) => (
+        link?.switchId === switchId &&
+        link?.targetType === targetType &&
+        link?.targetId === targetId
+      ));
+      if (duplicate) {
+        return plan;
+      }
+
+      const linkId = normalizeNonEmptyString(action.linkId) ?? generateLightingLinkId(lighting.links);
+      const nextLink = {
+        id: linkId,
+        switchId,
+        targetType,
+        targetId
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            links: [...lighting.links, nextLink]
+          }
+        }
+      });
+    }
+
+    case "plan/lighting/unlinkSwitchTarget": {
+      const switchId = normalizeNonEmptyString(action.switchId);
+      const targetType = normalizeLightingLinkTargetType(action.targetType);
+      const targetId = normalizeNonEmptyString(action.targetId);
+      if (!switchId || !targetType || !targetId) {
+        return plan;
+      }
+
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const nextLinks = lighting.links.filter((link) => !(
+        link?.switchId === switchId &&
+        link?.targetType === targetType &&
+        link?.targetId === targetId
+      ));
+      if (nextLinks.length === lighting.links.length) {
+        return plan;
+      }
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            links: nextLinks
+          }
+        }
+      });
+    }
+
+    case "plan/lighting/createGroupFromLamps": {
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const fixtureIds = normalizeLightingGroupFixtureIds(action.fixtureIds);
+      if (fixtureIds.length === 0) {
+        return plan;
+      }
+
+      const fixtureById = new Map(lighting.fixtures.map((fixture) => [fixture.id, fixture]));
+      for (const fixtureId of fixtureIds) {
+        const fixture = fixtureById.get(fixtureId);
+        if (!fixture || fixture.kind !== "lamp") {
+          return plan;
+        }
+      }
+
+      const groupId = normalizeNonEmptyString(action.groupId) ?? generateLightingGroupId(lighting.groups);
+      if (lighting.groups.some((group) => group?.id === groupId)) {
+        return plan;
+      }
+
+      const requestedRoomId = normalizeNonEmptyString(action.roomId);
+      const inferredRoomId = inferLightingGroupRoomIdFromFixtures(fixtureIds, fixtureById);
+      const roomId = requestedRoomId ?? inferredRoomId ?? null;
+      if (roomId) {
+        for (const fixtureId of fixtureIds) {
+          const fixtureRoomId = normalizeNonEmptyString(fixtureById.get(fixtureId)?.roomId);
+          if (fixtureRoomId && fixtureRoomId !== roomId) {
+            return plan;
+          }
+        }
+      }
+
+      const nextGroup = {
+        id: groupId,
+        kind: "lampGroup",
+        name: normalizeLightingGroupName(action.name, lighting.groups.length + 1),
+        roomId,
+        fixtureIds,
+        meta: {
+          pattern: "manual"
+        }
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            groups: [...lighting.groups, nextGroup]
+          }
+        }
+      });
+    }
+
+    case "plan/lighting/updateGroupLamps": {
+      const groupId = normalizeNonEmptyString(action.groupId);
+      if (!groupId) {
+        return plan;
+      }
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const groupIndex = lighting.groups.findIndex((group) => group?.id === groupId);
+      if (groupIndex < 0) {
+        return plan;
+      }
+
+      const fixtureIds = normalizeLightingGroupFixtureIds(action.fixtureIds);
+      if (fixtureIds.length === 0) {
+        return plan;
+      }
+      const fixtureById = new Map(lighting.fixtures.map((fixture) => [fixture.id, fixture]));
+      for (const fixtureId of fixtureIds) {
+        const fixture = fixtureById.get(fixtureId);
+        if (!fixture || fixture.kind !== "lamp") {
+          return plan;
+        }
+      }
+
+      const currentGroup = lighting.groups[groupIndex];
+      const roomId = normalizeNonEmptyString(action.roomId) ?? currentGroup?.roomId ?? null;
+      if (roomId) {
+        for (const fixtureId of fixtureIds) {
+          const fixtureRoomId = normalizeNonEmptyString(fixtureById.get(fixtureId)?.roomId);
+          if (fixtureRoomId && fixtureRoomId !== roomId) {
+            return plan;
+          }
+        }
+      }
+
+      const nextName = normalizeLightingGroupName(action.name, groupIndex + 1);
+      const currentFixtureIds = normalizeLightingGroupFixtureIds(currentGroup?.fixtureIds);
+      const sameFixtureIds = currentFixtureIds.length === fixtureIds.length &&
+        currentFixtureIds.every((fixtureId, index) => fixtureId === fixtureIds[index]);
+      const currentName = normalizeLightingGroupName(currentGroup?.name, groupIndex + 1);
+      if (sameFixtureIds && currentName === nextName && (currentGroup?.roomId ?? null) === roomId) {
+        return plan;
+      }
+
+      const nextGroups = lighting.groups.slice();
+      nextGroups[groupIndex] = {
+        ...currentGroup,
+        name: nextName,
+        roomId,
+        fixtureIds
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            groups: nextGroups
+          }
+        }
+      });
+    }
+
+    case "plan/lighting/deleteGroup": {
+      const groupId = normalizeNonEmptyString(action.groupId);
+      if (!groupId) {
+        return plan;
+      }
+
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const nextGroups = lighting.groups.filter((group) => group?.id !== groupId);
+      if (nextGroups.length === lighting.groups.length) {
+        return plan;
+      }
+      const nextLinks = lighting.links.filter((link) => !(link?.targetType === "lampGroup" && link?.targetId === groupId));
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            groups: nextGroups,
+            links: nextLinks
+          }
         }
       });
     }
@@ -812,6 +1188,464 @@ function cleanupOpeningsAfterRectangleDelete(openings, deletedRectangleId) {
     }
     return host.rectangleId !== deletedRectangleId;
   });
+}
+
+function applyLightingFixtureGeometryAfterRectanglesChanged(rawLighting, previousRectangles, nextRectangles) {
+  const lighting = ensureLightingCollections(rawLighting);
+  if (lighting.fixtures.length === 0) {
+    return lighting;
+  }
+
+  const previousById = new Map(
+    Array.isArray(previousRectangles)
+      ? previousRectangles
+        .filter((rectangle) => rectangle && typeof rectangle.id === "string" && rectangle.id)
+        .map((rectangle) => [rectangle.id, rectangle])
+      : []
+  );
+  const nextById = new Map(
+    Array.isArray(nextRectangles)
+      ? nextRectangles
+        .filter((rectangle) => rectangle && typeof rectangle.id === "string" && rectangle.id)
+        .map((rectangle) => [rectangle.id, rectangle])
+      : []
+  );
+
+  let changed = false;
+  const nextFixtures = lighting.fixtures.map((fixture) => {
+    const host = fixture?.host;
+    if (!host || typeof host !== "object") {
+      return fixture;
+    }
+
+    if (fixture.kind === "switch" && host.type === "wallSide") {
+      const rectangleId = normalizeNonEmptyString(host.rectangleId);
+      if (!rectangleId) {
+        return fixture;
+      }
+      const previousRectangle = previousById.get(rectangleId);
+      const nextRectangle = nextById.get(rectangleId);
+      if (!previousRectangle || !nextRectangle || !hasRectangleGeometryChanged(previousRectangle, nextRectangle)) {
+        return fixture;
+      }
+
+      const position = projectFixtureToWallSide(nextRectangle, host.side, host.offset);
+      if (!position) {
+        return fixture;
+      }
+
+      const nextRoomId = normalizeNonEmptyString(fixture.roomId) ?? normalizeNonEmptyString(nextRectangle.roomId) ?? null;
+      if (fixture.x === position.x && fixture.y === position.y && (fixture.roomId ?? null) === (nextRoomId ?? null)) {
+        return fixture;
+      }
+
+      changed = true;
+      return {
+        ...fixture,
+        x: position.x,
+        y: position.y,
+        roomId: nextRoomId
+      };
+    }
+
+    if (fixture.kind === "lamp" && host.type === "roomInterior") {
+      const rectangleId = normalizeNonEmptyString(host.rectangleId);
+      if (!rectangleId) {
+        return fixture;
+      }
+      const previousRectangle = previousById.get(rectangleId);
+      const nextRectangle = nextById.get(rectangleId);
+      if (!previousRectangle || !nextRectangle || !hasRectangleGeometryChanged(previousRectangle, nextRectangle)) {
+        return fixture;
+      }
+
+      const offsetX = Number.isFinite(host.offsetX) ? host.offsetX : fixture.x - previousRectangle.x;
+      const offsetY = Number.isFinite(host.offsetY) ? host.offsetY : fixture.y - previousRectangle.y;
+      const nextX = nextRectangle.x + offsetX;
+      const nextY = nextRectangle.y + offsetY;
+      const nextRoomId = normalizeNonEmptyString(fixture.roomId) ?? normalizeNonEmptyString(nextRectangle.roomId) ?? null;
+      if (
+        fixture.x === nextX &&
+        fixture.y === nextY &&
+        (fixture.roomId ?? null) === (nextRoomId ?? null) &&
+        host.offsetX === offsetX &&
+        host.offsetY === offsetY
+      ) {
+        return fixture;
+      }
+
+      changed = true;
+      return {
+        ...fixture,
+        x: nextX,
+        y: nextY,
+        roomId: nextRoomId,
+        host: {
+          ...host,
+          rectangleId,
+          offsetX,
+          offsetY
+        }
+      };
+    }
+
+    return fixture;
+  });
+
+  if (!changed) {
+    return lighting;
+  }
+
+  return {
+    ...lighting,
+    fixtures: nextFixtures
+  };
+}
+
+function hasRectangleGeometryChanged(previousRectangle, nextRectangle) {
+  return (
+    previousRectangle.x !== nextRectangle.x ||
+    previousRectangle.y !== nextRectangle.y ||
+    previousRectangle.w !== nextRectangle.w ||
+    previousRectangle.h !== nextRectangle.h
+  );
+}
+
+function projectFixtureToWallSide(rectangle, side, rawOffset) {
+  if (
+    !rectangle ||
+    !Number.isFinite(rectangle.x) ||
+    !Number.isFinite(rectangle.y) ||
+    !Number.isFinite(rectangle.w) ||
+    !Number.isFinite(rectangle.h) ||
+    rectangle.w <= 0 ||
+    rectangle.h <= 0
+  ) {
+    return null;
+  }
+  const offset = clampNumber(rawOffset, 0, 1, null);
+  if (offset == null) {
+    return null;
+  }
+
+  if (side === "top" || side === "bottom") {
+    return {
+      x: rectangle.x + rectangle.w * offset,
+      y: side === "top" ? rectangle.y : rectangle.y + rectangle.h
+    };
+  }
+  if (side === "left" || side === "right") {
+    return {
+      x: side === "left" ? rectangle.x : rectangle.x + rectangle.w,
+      y: rectangle.y + rectangle.h * offset
+    };
+  }
+  return null;
+}
+
+function ensureLightingCollections(rawLighting) {
+  const lighting = rawLighting && typeof rawLighting === "object" ? rawLighting : {};
+  return {
+    fixtures: Array.isArray(lighting.fixtures) ? lighting.fixtures.filter((fixture) => fixture && typeof fixture === "object") : [],
+    groups: Array.isArray(lighting.groups) ? lighting.groups.filter((group) => group && typeof group === "object") : [],
+    links: Array.isArray(lighting.links) ? lighting.links.filter((link) => link && typeof link === "object") : []
+  };
+}
+
+function cleanupLightingAfterRectangleDelete(rawLighting, deletedRectangleId) {
+  const lighting = ensureLightingCollections(rawLighting);
+  if (!deletedRectangleId) {
+    return lighting;
+  }
+
+  const removedFixtureIds = new Set(
+    lighting.fixtures
+      .filter((fixture) => (
+        typeof fixture?.host?.rectangleId === "string" &&
+        fixture.host.rectangleId === deletedRectangleId
+      ))
+      .map((fixture) => fixture.id)
+      .filter((fixtureId) => typeof fixtureId === "string" && fixtureId)
+  );
+
+  if (removedFixtureIds.size === 0) {
+    return lighting;
+  }
+
+  return cleanupLightingAfterFixtureDeletes(lighting, removedFixtureIds);
+}
+
+function clearLightingRoomAssignment(rawLighting, roomId) {
+  const lighting = ensureLightingCollections(rawLighting);
+  if (!roomId) {
+    return lighting;
+  }
+
+  let changed = false;
+  const nextFixtures = lighting.fixtures.map((fixture) => {
+    if (fixture?.roomId !== roomId) {
+      return fixture;
+    }
+    changed = true;
+    return {
+      ...fixture,
+      roomId: null
+    };
+  });
+
+  const nextGroups = lighting.groups
+    .filter((group) => group?.roomId !== roomId)
+    .map((group) => ({
+      ...group,
+      fixtureIds: normalizeLightingGroupFixtureIds(group?.fixtureIds)
+    }));
+
+  if (!changed && nextGroups.length === lighting.groups.length) {
+    return lighting;
+  }
+
+  const removedGroupIds = new Set(
+    lighting.groups
+      .filter((group) => group?.roomId === roomId && typeof group?.id === "string" && group.id)
+      .map((group) => group.id)
+  );
+  const nextLinks = lighting.links.filter((link) => !(link?.targetType === "lampGroup" && removedGroupIds.has(link?.targetId)));
+
+  return {
+    ...lighting,
+    fixtures: nextFixtures,
+    groups: nextGroups,
+    links: nextLinks
+  };
+}
+
+function cleanupLightingAfterFixtureDelete(rawLighting, fixtureId) {
+  return cleanupLightingAfterFixtureDeletes(rawLighting, new Set([fixtureId]));
+}
+
+function cleanupLightingAfterFixtureDeletes(rawLighting, fixtureIds) {
+  const lighting = ensureLightingCollections(rawLighting);
+  const fixtureIdSet = fixtureIds instanceof Set ? fixtureIds : new Set();
+  if (fixtureIdSet.size === 0) {
+    return lighting;
+  }
+
+  const nextFixtures = lighting.fixtures.filter((fixture) => !fixtureIdSet.has(fixture?.id));
+  const nextGroups = lighting.groups
+    .map((group) => ({
+      ...group,
+      fixtureIds: normalizeLightingGroupFixtureIds(group?.fixtureIds)
+        .filter((fixtureId) => !fixtureIdSet.has(fixtureId))
+    }))
+    .filter((group) => group.fixtureIds.length > 0);
+  const removedGroupIds = new Set(
+    lighting.groups
+      .filter((group) => !nextGroups.some((nextGroup) => nextGroup.id === group?.id))
+      .map((group) => group?.id)
+      .filter((groupId) => typeof groupId === "string" && groupId)
+  );
+
+  const nextLinks = lighting.links.filter((link) => (
+    !fixtureIdSet.has(link?.switchId) &&
+    !(link?.targetType === "lamp" && fixtureIdSet.has(link?.targetId)) &&
+    !(link?.targetType === "lampGroup" && removedGroupIds.has(link?.targetId))
+  ));
+
+  return {
+    ...lighting,
+    fixtures: nextFixtures,
+    groups: nextGroups,
+    links: nextLinks
+  };
+}
+
+function normalizeLightingFixtureKind(kind) {
+  if (kind === "switch" || kind === "lamp") {
+    return kind;
+  }
+  return null;
+}
+
+function normalizeLightingFixtureSubtype(subtype, fixtureKind) {
+  if (typeof subtype === "string" && subtype.trim()) {
+    return subtype.trim();
+  }
+  return fixtureKind === "switch" ? "switch_single" : "led_spot";
+}
+
+function normalizeLightingFixtureLabel(label) {
+  if (typeof label !== "string") {
+    return null;
+  }
+  const normalized = label.trim();
+  return normalized ? normalized : null;
+}
+
+function normalizeLightingFixtureHost(host, fixtureKind) {
+  if (fixtureKind === "switch") {
+    return normalizeSwitchHost(host);
+  }
+  const rawHost = host && typeof host === "object" ? host : null;
+  if (!rawHost || rawHost.type !== "roomInterior") {
+    return {
+      type: "roomInterior",
+      rectangleId: null,
+      offsetX: null,
+      offsetY: null
+    };
+  }
+  const rectangleId = normalizeNonEmptyString(rawHost.rectangleId);
+  const offsetX = Number.isFinite(rawHost.offsetX) ? rawHost.offsetX : null;
+  const offsetY = Number.isFinite(rawHost.offsetY) ? rawHost.offsetY : null;
+  return {
+    type: "roomInterior",
+    rectangleId: rectangleId ?? null,
+    offsetX,
+    offsetY
+  };
+}
+
+function normalizeSwitchHost(host) {
+  const rawHost = host && typeof host === "object" ? host : null;
+  if (!rawHost || rawHost.type !== "wallSide") {
+    return null;
+  }
+
+  const rectangleId = normalizeNonEmptyString(rawHost.rectangleId);
+  const side = normalizeWallSide(rawHost.side);
+  const offset = clampNumber(rawHost.offset, 0, 1, null);
+  if (!rectangleId || !side || offset == null) {
+    return null;
+  }
+
+  return {
+    type: "wallSide",
+    rectangleId,
+    side,
+    offset
+  };
+}
+
+function areLightingHostsEqual(a, b) {
+  if (!a || !b || a.type !== b.type) {
+    return false;
+  }
+  if (a.type === "wallSide") {
+    return (
+      a.rectangleId === b.rectangleId &&
+      a.side === b.side &&
+      a.offset === b.offset
+    );
+  }
+  if (a.type === "roomInterior") {
+    return (
+      (a.rectangleId ?? null) === (b.rectangleId ?? null) &&
+      (a.offsetX ?? null) === (b.offsetX ?? null) &&
+      (a.offsetY ?? null) === (b.offsetY ?? null)
+    );
+  }
+  return true;
+}
+
+function normalizeLightingLinkTargetType(value) {
+  if (value === "lamp" || value === "lampGroup") {
+    return value;
+  }
+  return null;
+}
+
+function hasLightingFixture(fixtures, fixtureId, kind = null) {
+  if (!Array.isArray(fixtures)) {
+    return false;
+  }
+  return fixtures.some((fixture) => (
+    fixture?.id === fixtureId &&
+    (kind == null || fixture?.kind === kind)
+  ));
+}
+
+function hasLightingGroup(groups, groupId) {
+  if (!Array.isArray(groups)) {
+    return false;
+  }
+  return groups.some((group) => group?.id === groupId);
+}
+
+function generateLightingLinkId(links) {
+  const existing = new Set(
+    Array.isArray(links)
+      ? links
+        .filter((link) => typeof link?.id === "string" && link.id)
+        .map((link) => link.id)
+      : []
+  );
+  if (!existing.has("lk_1")) {
+    return "lk_1";
+  }
+  let suffix = 2;
+  while (existing.has(`lk_${suffix}`)) {
+    suffix += 1;
+  }
+  return `lk_${suffix}`;
+}
+
+function generateLightingGroupId(groups) {
+  const existing = new Set(
+    Array.isArray(groups)
+      ? groups
+        .filter((group) => typeof group?.id === "string" && group.id)
+        .map((group) => group.id)
+      : []
+  );
+  if (!existing.has("lg_1")) {
+    return "lg_1";
+  }
+  let suffix = 2;
+  while (existing.has(`lg_${suffix}`)) {
+    suffix += 1;
+  }
+  return `lg_${suffix}`;
+}
+
+function normalizeLightingGroupName(name, fallbackIndex = 1) {
+  const normalized = normalizeNonEmptyString(name);
+  if (normalized) {
+    return normalized;
+  }
+  return `Lamp Group ${fallbackIndex}`;
+}
+
+function inferLightingGroupRoomIdFromFixtures(fixtureIds, fixtureById) {
+  if (!Array.isArray(fixtureIds) || !(fixtureById instanceof Map) || fixtureIds.length === 0) {
+    return null;
+  }
+
+  let inferredRoomId = null;
+  for (const fixtureId of fixtureIds) {
+    const fixtureRoomId = normalizeNonEmptyString(fixtureById.get(fixtureId)?.roomId);
+    if (!fixtureRoomId) {
+      continue;
+    }
+    if (!inferredRoomId) {
+      inferredRoomId = fixtureRoomId;
+      continue;
+    }
+    if (inferredRoomId !== fixtureRoomId) {
+      return null;
+    }
+  }
+  return inferredRoomId;
+}
+
+function normalizeLightingGroupFixtureIds(fixtureIds) {
+  if (!Array.isArray(fixtureIds)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      fixtureIds.filter((fixtureId) => typeof fixtureId === "string" && fixtureId)
+    )
+  );
 }
 
 function normalizeScaleReferenceLinePayload(rawReferenceLine) {

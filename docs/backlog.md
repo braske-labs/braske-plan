@@ -67,6 +67,7 @@ Goal: doors/windows can be placed and resized and influence quantities.
 - D1. Data model for openings attached to walls
 - D2. Editing UI (create/drag/resize)
 - D3. Correct snapping behavior + constraints
+- D4. Host integrity checks when wall geometry changes
 
 ### Epic E — Baseboards + estimates
 Goal: compute baseboards and show an explainable estimate.
@@ -75,6 +76,13 @@ Goal: compute baseboards and show an explainable estimate.
 - E2. Baseboard quantity with exclusions (room types + openings)
 - E3. “Highlight counted segments” overlay (debug)
 - E4. Local JSON price catalog + cost totals
+- E5. Paint quantities (wall height × eligible perimeter, minus openings)
+
+### Epic F — Lighting + switch inventory
+Goal: capture electrical fixture quantities per room and for whole plan.
+- F1. Add switch/lamp entity model
+- F2. Place/move/delete interactions with room linkage
+- F3. Per-room + total schedules (counts by type)
 
 ## Priority note (2026-02-26)
 - Prioritize wall-thickness authoring + derived perimeter geometry before persistent magnetic-link behavior.

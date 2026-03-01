@@ -50,7 +50,12 @@ Not included as persisted data:
   "entities": {
     "rectangles": [],
     "openings": [],
-    "rooms": []
+    "rooms": [],
+    "lighting": {
+      "fixtures": [],
+      "groups": [],
+      "links": []
+    }
   }
 }
 ```
@@ -142,6 +147,24 @@ Notes:
 - This shape is intentionally simple and may evolve when wall runs become explicit.
 - The key v0 decision is to anchor openings to authored geometry + edge, not free-floating screen pixels.
 
+### `entities.lighting`
+
+Lighting inventory primitives for quantity and cost workflows.
+
+Suggested shape:
+- `fixtures`: array
+  - switch/lamp fixtures with `id`, `kind`, `subtype`, `x`, `y`, `roomId`, `host`, `meta`
+- `groups`: array
+  - lamp arrays/groups with `id`, `name`, `roomId`, `fixtureIds[]`
+- `links`: array
+  - switch control links with `id`, `switchId`, `targetType`, `targetId`
+
+Notes:
+- v1 focus is quantity + mapping (`which switch controls which lamp/group`).
+- Circuit simulation is deferred.
+- `switch` hosts use `{ type: "wallSide", rectangleId, side, offset }`.
+- `lamp` hosts use `{ type: "roomInterior", rectangleId?, offsetX?, offsetY? }`; if `rectangleId` exists the lamp is glued to that rectangle on moves.
+
 ## Invariants (v0)
 
 - All IDs are unique within their entity type.
@@ -153,13 +176,15 @@ Notes:
 - If `scale.metersPerWorldUnit != null`, it must be `> 0`.
 - Openings reference an existing host rectangle and a valid edge.
 - Opening `length > 0` and `offset >= 0`.
+- Lighting links reference existing switches and valid targets (`lamp` or `lampGroup`).
+- Lighting groups include existing lamp fixture IDs only.
 
 ## Persisted vs transient vs derived
 
 ### Persisted (Plan Model v0)
 - `background`
 - `scale`
-- authored entities (`rectangles`, `rooms`, `openings`)
+- authored entities (`rectangles`, `rooms`, `openings`, `lighting`)
 - metadata/version
 
 ### Transient editor state (not persisted in plan)
@@ -250,7 +275,12 @@ Notes:
         "roomType": "living_room",
         "rectangleIds": ["rect_room_1"]
       }
-    ]
+    ],
+    "lighting": {
+      "fixtures": [],
+      "groups": [],
+      "links": []
+    }
   }
 }
 ```

@@ -19,7 +19,18 @@ export function createEditorShell(root) {
   const toolCalibrateScaleButton = root.querySelector("[data-editor-action='tool-calibrate-scale']");
   const calibrateScaleByAreaButton = root.querySelector("[data-editor-action='scale-calibrate-area']");
   const toolMergeRoomButton = root.querySelector("[data-editor-action='tool-merge-room']");
+  const toolPlaceSwitchButton = root.querySelector("[data-editor-action='tool-place-switch']");
+  const toolPlaceLampButton = root.querySelector("[data-editor-action='tool-place-lamp']");
+  const toolLinkLightingButton = root.querySelector("[data-editor-action='tool-link-lighting']");
   const deleteSelectedButton = root.querySelector("[data-editor-action='rect-delete']");
+  const deleteSelectedFixtureButton = root.querySelector("[data-editor-action='lighting-delete-fixture']");
+  const unplugSelectedFixtureButton = root.querySelector("[data-editor-action='lighting-unplug-selected']");
+  const confirmLightingLinksButton = root.querySelector("[data-editor-action='lighting-link-confirm']");
+  const clearLightingLinkSourceButton = root.querySelector("[data-editor-action='lighting-clear-link-source']");
+  const lightingGroupSelect = root.querySelector("[data-lighting-input='group']");
+  const lightingCreateGroupButton = root.querySelector("[data-editor-action='lighting-group-create-room']");
+  const lightingDeleteGroupButton = root.querySelector("[data-editor-action='lighting-group-delete']");
+  const lightingToggleGroupLinkButton = root.querySelector("[data-editor-action='lighting-link-toggle-group']");
   const rectangleKindToggleButton = root.querySelector("[data-editor-action='rect-toggle-kind']");
   const wallStatusElement = root.querySelector("[data-wall-status]");
   const wallTopValueElement = root.querySelector("[data-wall-value='top']");
@@ -40,6 +51,7 @@ export function createEditorShell(root) {
   const roomAssignButton = root.querySelector("[data-editor-action='room-assign']");
   const roomClearButton = root.querySelector("[data-editor-action='room-clear']");
   const mergeStatusElement = root.querySelector("[data-merge-status]");
+  const lightingStatusElement = root.querySelector("[data-lighting-status]");
   const roomMergeCompleteButton = root.querySelector("[data-editor-action='room-merge-complete']");
   const roomMergeCancelButton = root.querySelector("[data-editor-action='room-merge-cancel']");
   const roomDissolveButton = root.querySelector("[data-editor-action='room-dissolve']");
@@ -79,7 +91,18 @@ export function createEditorShell(root) {
       toolCalibrateScaleButton,
       calibrateScaleByAreaButton,
       toolMergeRoomButton,
+      toolPlaceSwitchButton,
+      toolPlaceLampButton,
+      toolLinkLightingButton,
       deleteSelectedButton,
+      deleteSelectedFixtureButton,
+      unplugSelectedFixtureButton,
+      confirmLightingLinksButton,
+      clearLightingLinkSourceButton,
+      lightingGroupSelect,
+      lightingCreateGroupButton,
+      lightingDeleteGroupButton,
+      lightingToggleGroupLinkButton,
       rectangleKindToggleButton,
       wallStatusElement,
       wallTopValueElement,
@@ -100,6 +123,7 @@ export function createEditorShell(root) {
       roomAssignButton,
       roomClearButton,
       mergeStatusElement,
+      lightingStatusElement,
       roomMergeCompleteButton,
       roomMergeCancelButton,
       roomDissolveButton,
@@ -151,6 +175,9 @@ function buildShell() {
         <button type="button" data-editor-action="tool-calibrate-scale" aria-pressed="false">Calibrate Scale</button>
         <button type="button" data-editor-action="scale-calibrate-area" disabled>Calibrate by Area</button>
         <button type="button" data-editor-action="tool-merge-room" aria-pressed="false">Merge Room</button>
+        <button type="button" data-editor-action="tool-place-switch" aria-pressed="false">Place Switch</button>
+        <button type="button" data-editor-action="tool-place-lamp" aria-pressed="false">Place Lamp</button>
+        <button type="button" data-editor-action="tool-link-lighting" aria-pressed="false">Link Lights</button>
         <button type="button" data-editor-action="rect-delete" disabled>Delete Rect</button>
         <button type="button" data-editor-action="rect-toggle-kind" aria-pressed="false" disabled>Set As Wall</button>
         <details class="toolbar-disclosure wall-controls">
@@ -225,6 +252,27 @@ function buildShell() {
             <button type="button" data-editor-action="room-merge-cancel" disabled>Cancel Merge</button>
             <button type="button" data-editor-action="room-dissolve" disabled>Dissolve Room</button>
             <button type="button" data-editor-action="room-internal-slide-toggle" aria-pressed="false">Internal Slides: Off</button>
+          </div>
+        </details>
+        <details class="toolbar-disclosure lighting-controls">
+          <summary>
+            <span class="toolbar-disclosure-title">Lighting</span>
+            <span class="toolbar-inline-status" data-lighting-status>No fixture selected</span>
+          </summary>
+          <div class="toolbar-disclosure-panel merge-controls-panel">
+            <label class="room-field">
+              <span>Lamp Group</span>
+              <select data-lighting-input="group" disabled>
+                <option value="">No groups</option>
+              </select>
+            </label>
+            <button type="button" data-editor-action="lighting-group-create-room" disabled>Auto Group Active Room</button>
+            <button type="button" data-editor-action="lighting-link-toggle-group" disabled>Link Source → Group</button>
+            <button type="button" data-editor-action="lighting-link-confirm" disabled>Confirm Linking</button>
+            <button type="button" data-editor-action="lighting-unplug-selected" disabled>Unplug Selected</button>
+            <button type="button" data-editor-action="lighting-group-delete" disabled>Delete Group</button>
+            <button type="button" data-editor-action="lighting-delete-fixture" disabled>Delete Fixture</button>
+            <button type="button" data-editor-action="lighting-clear-link-source" disabled>Clear Link Source</button>
           </div>
         </details>
         <button type="button" data-editor-action="plan-export-json">Export JSON</button>

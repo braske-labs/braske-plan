@@ -10,7 +10,7 @@ const DEFAULT_CAMERA = {
 
 export function createInitialEditorState() {
   return {
-    tool: "navigate", // "navigate" | "drawRect" | "calibrateScale" | "mergeRoom"
+    tool: "navigate", // "navigate" | "drawRect" | "calibrateScale" | "mergeRoom" | "placeSwitch" | "placeLamp" | "linkLighting"
     viewport: {
       cssWidth: 1,
       cssHeight: 1,
@@ -22,6 +22,14 @@ export function createInitialEditorState() {
     },
     roomSelection: {
       roomId: null
+    },
+    lightingSelection: {
+      fixtureId: null,
+      linkSwitchId: null,
+      groupId: null
+    },
+    lightingPreview: {
+      switchStatesById: {}
     },
     mergeSelection: {
       rectangleIds: []
@@ -37,6 +45,7 @@ export function createInitialEditorState() {
       pointerId: null,
       lastScreen: null,
       dragRectangle: null,
+      dragFixture: null,
       drawRectDraft: null,
       resizeRectangle: null,
       calibrationDraft: null
@@ -54,6 +63,12 @@ export function editorUiReducer(state, action) {
       return {
         ...state,
         tool: nextTool,
+        lightingSelection: nextTool === "linkLighting"
+          ? state.lightingSelection
+          : {
+              ...state.lightingSelection,
+              linkSwitchId: null
+            },
         mergeSelection: nextTool === "mergeRoom"
           ? state.mergeSelection
           : { rectangleIds: [] }
@@ -141,6 +156,115 @@ export function editorUiReducer(state, action) {
         ...state,
         roomSelection: {
           roomId: null
+        }
+      };
+
+    case "editor/lightingSelection/setFixture": {
+      const fixtureId = normalizeFixtureId(action.fixtureId);
+      if (state.lightingSelection.fixtureId === fixtureId) {
+        return state;
+      }
+      return {
+        ...state,
+        lightingSelection: {
+          ...state.lightingSelection,
+          fixtureId
+        }
+      };
+    }
+
+    case "editor/lightingSelection/clearFixture":
+      if (state.lightingSelection.fixtureId == null) {
+        return state;
+      }
+      return {
+        ...state,
+        lightingSelection: {
+          ...state.lightingSelection,
+          fixtureId: null
+        }
+      };
+
+    case "editor/lightingSelection/setGroup": {
+      const groupId = normalizeGroupId(action.groupId);
+      if (state.lightingSelection.groupId === groupId) {
+        return state;
+      }
+      return {
+        ...state,
+        lightingSelection: {
+          ...state.lightingSelection,
+          groupId
+        }
+      };
+    }
+
+    case "editor/lightingSelection/clearGroup":
+      if (state.lightingSelection.groupId == null) {
+        return state;
+      }
+      return {
+        ...state,
+        lightingSelection: {
+          ...state.lightingSelection,
+          groupId: null
+        }
+      };
+
+    case "editor/lightingPreview/toggleSwitch": {
+      const switchId = normalizeFixtureId(action.switchId);
+      if (!switchId) {
+        return state;
+      }
+      const currentStates = isPlainObject(state.lightingPreview?.switchStatesById)
+        ? state.lightingPreview.switchStatesById
+        : {};
+      const currentState = currentStates[switchId];
+      const nextState = currentState === false;
+      return {
+        ...state,
+        lightingPreview: {
+          ...state.lightingPreview,
+          switchStatesById: {
+            ...currentStates,
+            [switchId]: nextState
+          }
+        }
+      };
+    }
+
+    case "editor/lightingPreview/clear":
+      return {
+        ...state,
+        lightingPreview: {
+          ...state.lightingPreview,
+          switchStatesById: {}
+        }
+      };
+
+    case "editor/lightingLink/setSwitch": {
+      const switchId = normalizeFixtureId(action.switchId);
+      if (state.lightingSelection.linkSwitchId === switchId) {
+        return state;
+      }
+      return {
+        ...state,
+        lightingSelection: {
+          ...state.lightingSelection,
+          linkSwitchId: switchId
+        }
+      };
+    }
+
+    case "editor/lightingLink/clearSwitch":
+      if (state.lightingSelection.linkSwitchId == null) {
+        return state;
+      }
+      return {
+        ...state,
+        lightingSelection: {
+          ...state.lightingSelection,
+          linkSwitchId: null
         }
       };
 
@@ -245,6 +369,7 @@ export function editorUiReducer(state, action) {
           pointerId: action.pointerId,
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
+          dragFixture: null,
           drawRectDraft: null,
           resizeRectangle: null,
           calibrationDraft: null
@@ -278,6 +403,7 @@ export function editorUiReducer(state, action) {
             offsetX: action.offsetX,
             offsetY: action.offsetY
           },
+          dragFixture: null,
           drawRectDraft: null,
           resizeRectangle: null,
           calibrationDraft: null
@@ -299,6 +425,40 @@ export function editorUiReducer(state, action) {
         }
       };
 
+    case "editor/interaction/fixtureDragStart":
+      return {
+        ...state,
+        interaction: {
+          mode: "draggingFixture",
+          pointerId: action.pointerId,
+          lastScreen: { x: action.screenX, y: action.screenY },
+          dragRectangle: null,
+          dragFixture: {
+            fixtureId: action.fixtureId,
+            offsetX: action.offsetX,
+            offsetY: action.offsetY
+          },
+          drawRectDraft: null,
+          resizeRectangle: null,
+          calibrationDraft: null
+        }
+      };
+
+    case "editor/interaction/fixtureDragMove":
+      if (
+        state.interaction.mode !== "draggingFixture" ||
+        state.interaction.pointerId !== action.pointerId
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        interaction: {
+          ...state.interaction,
+          lastScreen: { x: action.screenX, y: action.screenY }
+        }
+      };
+
     case "editor/interaction/drawRectStart":
       return {
         ...state,
@@ -307,6 +467,7 @@ export function editorUiReducer(state, action) {
           pointerId: action.pointerId,
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
+          dragFixture: null,
           drawRectDraft: {
             startWorld: { x: action.startWorldX, y: action.startWorldY },
             currentWorld: { x: action.startWorldX, y: action.startWorldY }
@@ -344,6 +505,7 @@ export function editorUiReducer(state, action) {
           pointerId: action.pointerId,
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
+          dragFixture: null,
           drawRectDraft: null,
           resizeRectangle: {
             rectangleId: action.rectangleId,
@@ -383,6 +545,7 @@ export function editorUiReducer(state, action) {
           pointerId: action.pointerId,
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
+          dragFixture: null,
           drawRectDraft: null,
           resizeRectangle: null,
           calibrationDraft: {
@@ -423,6 +586,7 @@ export function editorUiReducer(state, action) {
           pointerId: null,
           lastScreen: null,
           dragRectangle: null,
+          dragFixture: null,
           drawRectDraft: null,
           resizeRectangle: null,
           calibrationDraft: null
@@ -439,7 +603,10 @@ function normalizeEditorTool(tool) {
     tool === "navigate" ||
     tool === "drawRect" ||
     tool === "calibrateScale" ||
-    tool === "mergeRoom"
+    tool === "mergeRoom" ||
+    tool === "placeSwitch" ||
+    tool === "placeLamp" ||
+    tool === "linkLighting"
   ) {
     return tool;
   }
@@ -460,4 +627,24 @@ function normalizeRoomId(roomId) {
   }
   const trimmed = roomId.trim();
   return trimmed || null;
+}
+
+function normalizeFixtureId(fixtureId) {
+  if (typeof fixtureId !== "string") {
+    return null;
+  }
+  const trimmed = fixtureId.trim();
+  return trimmed || null;
+}
+
+function normalizeGroupId(groupId) {
+  if (typeof groupId !== "string") {
+    return null;
+  }
+  const trimmed = groupId.trim();
+  return trimmed || null;
+}
+
+function isPlainObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
 }

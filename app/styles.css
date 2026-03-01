@@ -402,7 +402,16 @@ body {
   cursor: crosshair;
 }
 
+.canvas-shell[data-tool-mode="placeSwitch"][data-pan-mode="idle"] canvas,
+.canvas-shell[data-tool-mode="placeLamp"][data-pan-mode="idle"] canvas {
+  cursor: crosshair;
+}
+
 .canvas-shell[data-tool-mode="mergeRoom"][data-pan-mode="idle"] canvas {
+  cursor: pointer;
+}
+
+.canvas-shell[data-tool-mode="linkLighting"][data-pan-mode="idle"] canvas {
   cursor: pointer;
 }
 
@@ -415,6 +424,10 @@ body {
 }
 
 .canvas-shell[data-pan-mode="draggingRect"] canvas {
+  cursor: grabbing;
+}
+
+.canvas-shell[data-pan-mode="draggingFixture"] canvas {
   cursor: grabbing;
 }
 
