@@ -2,7 +2,7 @@
 
 Dates: 2026-02-28 → 2026-03-07
 Goal: Convert baseboard debug geometry into reliable quantity behavior with room semantics and reproducible exports.
-Status: OPEN
+Status: CLOSED on 2026-03-01 (scope pivot; carry-over moved to backlog/new sprint)
 
 ## Sprint backlog (committed)
 - T-0024 (3 pts): Multi-rectangle room composition v1 (assign selected rectangles into one room ID).
@@ -34,7 +34,11 @@ Stretch points: 6
 - `T-0024` multi-rectangle room composition v1 (merge tool + dissolve + seam locks).
 
 ### Missed / deferred
--  
+- `T-0025` baseboard exclusion rules v1 (still OPEN).
+- `T-0026` derived baseboard snapshot export v1 (still OPEN).
+- `T-0027` closure diagnostics v1 (still OPEN).
+- `T-0028` overlap conflict visualizer v1 (still OPEN).
 
 ### Lessons / changes
--  
+- 2026-03-01: Sidebar/lighting workflow needs to be stabilized before continuing baseboard-rule refinements.
+- 2026-03-01: Keep remaining S006 tickets in backlog and pick them explicitly in a later sprint to avoid hidden WIP.

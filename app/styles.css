@@ -181,6 +181,20 @@ body {
   white-space: nowrap;
 }
 
+.room-list-main {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.room-list-stats {
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .room-list-meta {
   font-size: 0.78rem;
   color: var(--muted);
@@ -194,6 +208,56 @@ body {
   font-size: 0.84rem;
   color: var(--muted);
   line-height: 1.35;
+  max-height: 38vh;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+
+.room-details-header {
+  padding-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.room-package,
+.room-subpackage {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, #fff 92%, var(--paper));
+}
+
+.room-package > summary,
+.room-subpackage > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 8px;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.room-package > summary::-webkit-details-marker,
+.room-subpackage > summary::-webkit-details-marker {
+  display: none;
+}
+
+.room-package-body {
+  padding: 0 8px 8px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.room-lines {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 3px;
+}
+
+.room-inline-note {
+  margin-bottom: 6px;
+  font-size: 0.74rem;
 }
 
 .editor-frame {
