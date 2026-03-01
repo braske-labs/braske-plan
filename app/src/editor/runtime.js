@@ -11,11 +11,18 @@ import {
 } from "./geometry/rectangles.js";
 import {
   buildScaleCalibration,
+  computeMetersPerWorldUnitFromArea,
   distanceBetweenWorldPoints,
   formatMetersAndCentimeters,
   worldLengthToMeters
 } from "./geometry/scale.js";
 import { deriveBaseboardCandidates } from "./geometry/baseboards.js";
+import {
+  deriveLockedSeamSides,
+  deriveRoomSeams,
+  deriveTouchingAdjacency,
+  isConnectedSelection
+} from "./geometry/room-merge.js";
 import { snapDraggedRectangle, snapResizedRectangle } from "./geometry/snapping.js";
 import { validateBasicPlanGeometry } from "./geometry/validation.js";
 import {
@@ -108,6 +115,8 @@ export function mountEditorRuntime(options) {
   let lastValidationResult = null;
   let lastBaseboardPlan = null;
   let lastBaseboardResult = null;
+  let lastLockedSeamsPlan = null;
+  let lastLockedSeamSides = null;
   let nextUserRectangleId = deriveNextUserRectangleId(store.getState().plan);
 
   const resize = () => {
@@ -146,9 +155,8 @@ export function mountEditorRuntime(options) {
     const worldPoint = screenToWorld(editorState.camera, point.x, point.y);
     const selectedRectangle = getSelectedRectangle(plan, editorState);
 
-    canvas.setPointerCapture(event.pointerId);
-
     if (event.button === 1) {
+      canvas.setPointerCapture(event.pointerId);
       store.dispatch({
         type: "editor/interaction/panStart",
         pointerId: event.pointerId,
@@ -161,6 +169,7 @@ export function mountEditorRuntime(options) {
 
     if (editorState.tool === "drawRect") {
       store.dispatch({ type: "editor/selection/clear" });
+      canvas.setPointerCapture(event.pointerId);
       store.dispatch({
         type: "editor/interaction/drawRectStart",
         pointerId: event.pointerId,
@@ -175,6 +184,7 @@ export function mountEditorRuntime(options) {
 
     if (editorState.tool === "calibrateScale") {
       store.dispatch({ type: "editor/selection/clear" });
+      canvas.setPointerCapture(event.pointerId);
       store.dispatch({
         type: "editor/interaction/calibrationStart",
         pointerId: event.pointerId,
@@ -187,11 +197,43 @@ export function mountEditorRuntime(options) {
       return;
     }
 
+    if (editorState.tool === "mergeRoom") {
+      const hit = hitTestRectangles(plan.entities.rectangles, worldPoint, {
+        getBounds: (rectangle) => getRectangleHitBounds(rectangle, plan.scale)
+      });
+      if (!hit || hit.rectangle.kind === "wallRect") {
+        return;
+      }
+      store.dispatch({
+        type: "editor/selection/set",
+        rectangleId: hit.rectangle.id
+      });
+      syncRoomSelectionFromRectangle(hit.rectangle);
+      store.dispatch({
+        type: "editor/merge/toggleRectangle",
+        rectangleId: hit.rectangle.id
+      });
+      syncEditorChrome();
+      return;
+    }
+
+    const lockedSeamSides = getLockedSeamSides(plan);
     if (selectedRectangle) {
       const handleHit = hitTestResizeHandles(selectedRectangle, worldPoint, editorState.camera.zoom, {
         handleSizePx: HANDLE_SIZE_PX
       });
       if (handleHit) {
+        const lockedSides = lockedSeamSides.get(selectedRectangle.id);
+        const handleBlockedByLockedSeam = isResizeHandleBlockedByLockedSides(handleHit.name, lockedSides);
+        let seamSlideDescriptor = null;
+        if (handleBlockedByLockedSeam && isInternalSeamSlideAdjustEnabled(editorState)) {
+          seamSlideDescriptor = deriveInternalSeamSlideStartDescriptor(plan, selectedRectangle.id, handleHit.name);
+        }
+        if (handleBlockedByLockedSeam && !seamSlideDescriptor) {
+          syncEditorChrome();
+          return;
+        }
+        canvas.setPointerCapture(event.pointerId);
         store.dispatch({
           type: "editor/interaction/resizeStart",
           pointerId: event.pointerId,
@@ -202,7 +244,8 @@ export function mountEditorRuntime(options) {
           rectX: selectedRectangle.x,
           rectY: selectedRectangle.y,
           rectW: selectedRectangle.w,
-          rectH: selectedRectangle.h
+          rectH: selectedRectangle.h,
+          seamSlide: seamSlideDescriptor
         });
         syncEditorChrome();
         return;
@@ -219,6 +262,8 @@ export function mountEditorRuntime(options) {
         type: "editor/selection/set",
         rectangleId: hit.rectangle.id
       });
+      syncRoomSelectionFromRectangle(hit.rectangle);
+      canvas.setPointerCapture(event.pointerId);
       store.dispatch({
         type: "editor/interaction/rectDragStart",
         pointerId: event.pointerId,
@@ -233,6 +278,7 @@ export function mountEditorRuntime(options) {
     }
 
     store.dispatch({ type: "editor/selection/clear" });
+    canvas.setPointerCapture(event.pointerId);
     store.dispatch({
       type: "editor/interaction/panStart",
       pointerId: event.pointerId,
@@ -289,6 +335,77 @@ export function mountEditorRuntime(options) {
       const draggedRectangle = state.plan.entities.rectangles.find(
         (rectangle) => rectangle.id === dragRectangle.rectangleId
       );
+      if (!draggedRectangle) {
+        store.dispatch({
+          type: "editor/interaction/rectDragMove",
+          pointerId: event.pointerId,
+          screenX: event.clientX,
+          screenY: event.clientY
+        });
+        return;
+      }
+
+      const dragGroupRectangleIds = getDragGroupRectangleIds(state.plan, draggedRectangle);
+      const dx = nextPosition.x - draggedRectangle.x;
+      const dy = nextPosition.y - draggedRectangle.y;
+
+      if (dragGroupRectangleIds.length > 1) {
+        if (dx !== 0 || dy !== 0) {
+          const dragGroupRectangleIdSet = new Set(dragGroupRectangleIds);
+          let groupDx = dx;
+          let groupDy = dy;
+          const snapWallWorld = getRectangleWallWorld(draggedRectangle, state.plan.scale?.metersPerWorldUnit);
+          const proposedDraggedRectangle = {
+            x: nextPosition.x,
+            y: nextPosition.y,
+            w: draggedRectangle.w,
+            h: draggedRectangle.h
+          };
+          const proposedDraggedShell = interiorRectToOuterRect(proposedDraggedRectangle, snapWallWorld);
+          if (proposedDraggedShell) {
+            const externalShellRectangles = buildPlanShellRectangles(state.plan).filter(
+              (rectangle) => !dragGroupRectangleIdSet.has(rectangle.id)
+            );
+            const snapResult = snapDraggedRectangle(
+              proposedDraggedShell,
+              externalShellRectangles,
+              {
+                toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom
+              }
+            );
+            const snappedDraggedInterior = outerRectToInteriorRect(snapResult.rectangle, snapWallWorld);
+            if (snappedDraggedInterior) {
+              groupDx = snappedDraggedInterior.x - draggedRectangle.x;
+              groupDy = snappedDraggedInterior.y - draggedRectangle.y;
+            }
+          }
+
+          const groupUpdates = dragGroupRectangleIds.map((rectangleId) => {
+            const rectangle = state.plan.entities.rectangles.find((candidate) => candidate.id === rectangleId);
+            return rectangle
+              ? {
+                  id: rectangle.id,
+                  x: rectangle.x + groupDx,
+                  y: rectangle.y + groupDy,
+                  w: rectangle.w,
+                  h: rectangle.h
+                }
+              : null;
+          }).filter(Boolean);
+          applyRectangleGeometryUpdates(state.plan, groupUpdates, {
+            enforceRoomConnectivity: true
+          });
+        }
+
+        store.dispatch({
+          type: "editor/interaction/rectDragMove",
+          pointerId: event.pointerId,
+          screenX: event.clientX,
+          screenY: event.clientY
+        });
+        return;
+      }
+
       const proposedRectangle = draggedRectangle
         ? {
             x: nextPosition.x,
@@ -317,12 +434,17 @@ export function mountEditorRuntime(options) {
         }
       }
 
-      store.dispatch({
-        type: "plan/rectangles/move",
-        rectangleId: dragRectangle.rectangleId,
-        x: snappedRectangle.x,
-        y: snappedRectangle.y
-      });
+      applyRectangleGeometryUpdates(
+        state.plan,
+        [{
+          id: dragRectangle.rectangleId,
+          x: snappedRectangle.x,
+          y: snappedRectangle.y,
+          w: snappedRectangle.w,
+          h: snappedRectangle.h
+        }],
+        { enforceRoomConnectivity: true }
+      );
       store.dispatch({
         type: "editor/interaction/rectDragMove",
         pointerId: event.pointerId,
@@ -373,6 +495,23 @@ export function mountEditorRuntime(options) {
     ) {
       const worldPoint = screenToWorld(state.editorState.camera, point.x, point.y);
       const resizeState = state.editorState.interaction.resizeRectangle;
+      if (resizeState.seamSlide) {
+        const seamSlideUpdates = deriveInternalSeamSlideUpdates(resizeState.seamSlide, worldPoint, {
+          minSize: MIN_RECT_SIZE
+        });
+        if (seamSlideUpdates.length > 0) {
+          applyRectangleGeometryUpdates(state.plan, seamSlideUpdates, {
+            enforceRoomConnectivity: true
+          });
+        }
+        store.dispatch({
+          type: "editor/interaction/resizeMove",
+          pointerId: event.pointerId,
+          screenX: event.clientX,
+          screenY: event.clientY
+        });
+        return;
+      }
       const nextRect = resizeRectangleFromHandle(
         resizeState.snapshot,
         resizeState.handleName,
@@ -409,14 +548,17 @@ export function mountEditorRuntime(options) {
         }
       }
 
-      store.dispatch({
-        type: "plan/rectangles/setGeometry",
-        rectangleId: resizeState.rectangleId,
-        x: snappedRect.x,
-        y: snappedRect.y,
-        w: snappedRect.w,
-        h: snappedRect.h
-      });
+      applyRectangleGeometryUpdates(
+        state.plan,
+        [{
+          id: resizeState.rectangleId,
+          x: snappedRect.x,
+          y: snappedRect.y,
+          w: snappedRect.w,
+          h: snappedRect.h
+        }],
+        { enforceRoomConnectivity: true }
+      );
       store.dispatch({
         type: "editor/interaction/resizeMove",
         pointerId: event.pointerId,
@@ -457,6 +599,7 @@ export function mountEditorRuntime(options) {
           type: "editor/selection/set",
           rectangleId
         });
+        syncRoomSelectionFromRectangle({ id: rectangleId, roomId: null });
       }
     }
 
@@ -531,6 +674,18 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.calibrateScaleByAreaButton) {
+    controls.calibrateScaleByAreaButton.addEventListener("click", () => {
+      calibrateScaleByActiveRoomArea();
+    });
+  }
+
+  if (controls.toolMergeRoomButton) {
+    controls.toolMergeRoomButton.addEventListener("click", () => {
+      store.dispatch({ type: "editor/tool/set", tool: "mergeRoom" });
+    });
+  }
+
   if (controls.baseboardDebugToggleButton) {
     controls.baseboardDebugToggleButton.addEventListener("click", () => {
       store.dispatch({ type: "editor/debug/toggleBaseboardOverlay" });
@@ -602,6 +757,30 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.roomMergeCompleteButton) {
+    controls.roomMergeCompleteButton.addEventListener("click", () => {
+      completeMergeSelection();
+    });
+  }
+
+  if (controls.roomMergeCancelButton) {
+    controls.roomMergeCancelButton.addEventListener("click", () => {
+      cancelMergeSelection();
+    });
+  }
+
+  if (controls.roomDissolveButton) {
+    controls.roomDissolveButton.addEventListener("click", () => {
+      dissolveSelectedRectangleRoom();
+    });
+  }
+
+  if (controls.roomInternalSlideToggleButton) {
+    controls.roomInternalSlideToggleButton.addEventListener("click", () => {
+      store.dispatch({ type: "editor/merge/toggleInternalAdjust" });
+    });
+  }
+
   if (controls.roomNameInput) {
     controls.roomNameInput.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") {
@@ -609,6 +788,34 @@ export function mountEditorRuntime(options) {
       }
       event.preventDefault();
       assignSelectedRectangleRoomTag();
+    });
+  }
+
+  if (controls.roomListElement) {
+    controls.roomListElement.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const item = target.closest("[data-room-item-id]");
+      if (!(item instanceof HTMLElement)) {
+        return;
+      }
+      const roomId = item.dataset.roomItemId;
+      activateRoomFromSidebar(roomId, { center: false });
+    });
+
+    controls.roomListElement.addEventListener("dblclick", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const item = target.closest("[data-room-item-id]");
+      if (!(item instanceof HTMLElement)) {
+        return;
+      }
+      const roomId = item.dataset.roomItemId;
+      activateRoomFromSidebar(roomId, { center: true });
     });
   }
 
@@ -781,6 +988,9 @@ export function mountEditorRuntime(options) {
 
     const validation = getBasicValidationResult(plan);
     const baseboard = getBaseboardResult(plan);
+    const lockedSeamSides = getLockedSeamSides(plan);
+    const roomEntries = deriveSidebarRooms(plan);
+    const activeRoomId = deriveEffectiveActiveRoomId(plan, editorState, roomEntries);
 
     ensureBackgroundImageLoaded(plan.background);
 
@@ -789,12 +999,36 @@ export function mountEditorRuntime(options) {
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, cssWidth, cssHeight);
 
-    drawWorld(context, plan, editorState, validation, cssWidth, cssHeight, dpr, baseboard, timestamp);
+    drawWorld(
+      context,
+      plan,
+      editorState,
+      validation,
+      cssWidth,
+      cssHeight,
+      dpr,
+      baseboard,
+      lockedSeamSides,
+      activeRoomId,
+      timestamp
+    );
     drawScreenOverlay(context, editorState, plan, validation, baseboard, pointerHover, cssWidth, cssHeight, timestamp);
     updateUiReadouts(editorState, plan, validation, baseboard, timestamp);
   }
 
-  function drawWorld(ctx, plan, editorState, validation, cssWidth, cssHeight, dpr, baseboard, timestamp) {
+  function drawWorld(
+    ctx,
+    plan,
+    editorState,
+    validation,
+    cssWidth,
+    cssHeight,
+    dpr,
+    baseboard,
+    lockedSeamSides,
+    activeRoomId,
+    timestamp
+  ) {
     const { camera, selection } = editorState;
     const showBaseboardOverlay = isBaseboardOverlayEnabled(editorState);
     ctx.save();
@@ -809,12 +1043,20 @@ export function mountEditorRuntime(options) {
 
     drawBackgroundFrame(ctx, plan, backgroundImageState);
     drawGrid(ctx, camera, cssWidth, cssHeight);
-    drawDebugRectangles(ctx, plan, selection.rectangleId, camera);
+    drawDebugRectangles(
+      ctx,
+      plan,
+      selection.rectangleId,
+      camera,
+      editorState.mergeSelection?.rectangleIds,
+      activeRoomId,
+      lockedSeamSides
+    );
     if (showBaseboardOverlay) {
       drawBaseboardDebugSegments(ctx, baseboard, camera);
     }
     drawValidationOverlapFlash(ctx, plan, validation, camera, timestamp);
-    drawSelectedResizeHandles(ctx, plan, editorState);
+    drawSelectedResizeHandles(ctx, plan, editorState, lockedSeamSides);
     drawDraftRectangle(ctx, editorState, camera);
     drawScaleReferenceLine(ctx, plan, camera);
     drawCalibrationDraftLine(ctx, editorState, camera);
@@ -916,10 +1158,15 @@ export function mountEditorRuntime(options) {
       const overlapFlashLabel = formatValidationOverlapFlashStatus(validation, timestamp);
       const baseboardLabel = formatBaseboardSummaryStatus(baseboard, showBaseboardOverlay);
       const fileIoLabel = formatFileTransferStatusShort(fileTransferStatus);
+      const mergeSelectionCount = Array.isArray(editorState.mergeSelection?.rectangleIds)
+        ? editorState.mergeSelection.rectangleIds.length
+        : 0;
+      const internalSlideMode = isInternalSeamSlideAdjustEnabled(editorState) ? "slides:on" : "slides:off";
+      const activeRoomId = deriveEffectiveActiveRoomId(plan, editorState);
       statusElement.textContent =
-        `T-0019 baseboard v0 | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | overlap ${overlapFlashLabel} | ${baseboardLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
+        `T-0024 merge room v1 | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | overlap ${overlapFlashLabel} | ${baseboardLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
-        `zoom ${camera.zoom.toFixed(2)}x | ` +
+        `zoom ${camera.zoom.toFixed(2)}x | merge ${mergeSelectionCount} ${internalSlideMode} | active-room ${activeRoomId ?? "none"} | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedKindLabel ? ` (${selectedKindLabel})` : ""}${selectedDimsLabel ? ` ${selectedDimsLabel}` : ""}${selectedWallLabel ? ` [${selectedWallLabel}]` : ""}${selectedRoomLabel ? ` {${selectedRoomLabel}}` : ""} | ` +
         `fps ~${fps.toFixed(0)}`;
     }
@@ -927,11 +1174,11 @@ export function mountEditorRuntime(options) {
     if (overlayElement) {
       const selectedRectangle = getSelectedRectangle(plan, editorState);
       overlayElement.innerHTML =
-        `T-0019 active (baseboard candidate detection + debug overlay). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
+        `T-0024 active (manual room merge + seam locks). Image: ${formatBackgroundImageStatus(backgroundImageState)}.<br>` +
         `Background opacity ${Math.round(plan.background.opacity * 100)}%; ` +
         `frame ${Math.round(plan.background.transform.width)}x${Math.round(plan.background.transform.height)} at ` +
         `${Math.round(plan.background.transform.x)}, ${Math.round(plan.background.transform.y)}.<br>` +
-        `${formatScaleDetail(plan.scale)}. Use Calibrate Scale tool to draw a reference line and enter meters.<br>` +
+        `${formatScaleDetail(plan.scale)}. Use Calibrate Scale for a reference line or Calibrate by Area with an active room.<br>` +
         `Baseboard candidates: ${formatBaseboardSummaryOverlay(baseboard, showBaseboardOverlay)}.<br>` +
         `Selected kind: ${formatSelectedRectangleKindOverlay(selectedRectangle)}.<br>` +
         `Selected room tag: ${formatSelectedRectangleRoomTagOverlay(selectedRectangle, plan)}.<br>` +
@@ -940,6 +1187,7 @@ export function mountEditorRuntime(options) {
         `Validation: ${formatValidationDetail(validation)}.<br>` +
         `Overlap flash: ${formatValidationOverlapFlashOverlay(validation, timestamp)}.<br>` +
         `File I/O: ${formatFileTransferStatusDetail(fileTransferStatus)}.<br>` +
+        `Merge tool: select touching room rectangles, then Complete Merge. Merged room drag moves as one group; internal seams lock unless Internal Slides is enabled.<br>` +
         `Drag/resize snaps within ${SNAP_TOLERANCE_PX}px. Delete uses toolbar button or Delete/Backspace.<br>` +
         `Autosave/load still active: ${describeLoadSource(persistenceStatus.loadSource)}; ${formatAutosaveStatusDetail(persistenceStatus)}.`;
     }
@@ -963,6 +1211,17 @@ export function mountEditorRuntime(options) {
     return lastBaseboardResult;
   }
 
+  function getLockedSeamSides(plan) {
+    if (plan === lastLockedSeamsPlan && lastLockedSeamSides) {
+      return lastLockedSeamSides;
+    }
+    lastLockedSeamsPlan = plan;
+    lastLockedSeamSides = deriveLockedSeamSides(plan, {
+      metersPerWorldUnit: plan.scale?.metersPerWorldUnit
+    });
+    return lastLockedSeamSides;
+  }
+
   function syncEditorChrome() {
     const snapshot = store.getState();
     const state = snapshot.editorState;
@@ -979,6 +1238,16 @@ export function mountEditorRuntime(options) {
     }
     if (controls.toolCalibrateScaleButton) {
       controls.toolCalibrateScaleButton.setAttribute("aria-pressed", state.tool === "calibrateScale" ? "true" : "false");
+    }
+    if (controls.toolMergeRoomButton) {
+      controls.toolMergeRoomButton.setAttribute("aria-pressed", state.tool === "mergeRoom" ? "true" : "false");
+    }
+    if (controls.roomInternalSlideToggleButton) {
+      const enabled = isInternalSeamSlideAdjustEnabled(state);
+      controls.roomInternalSlideToggleButton.setAttribute("aria-pressed", enabled ? "true" : "false");
+      controls.roomInternalSlideToggleButton.textContent = enabled
+        ? "Internal Slides: On"
+        : "Internal Slides: Off";
     }
     if (controls.baseboardDebugToggleButton) {
       controls.baseboardDebugToggleButton.setAttribute(
@@ -1000,12 +1269,15 @@ export function mountEditorRuntime(options) {
     }
     syncWallControls(snapshot.plan, state);
     syncRoomControls(snapshot.plan, state);
+    syncMergeControls(snapshot.plan, state);
+    syncAreaScaleCalibrationControl(snapshot.plan, state);
     if (controls.backgroundStatusElement) {
       controls.backgroundStatusElement.textContent = formatBackgroundShort(snapshot.plan.background, backgroundImageState);
     }
     if (controls.scaleStatusElement) {
       controls.scaleStatusElement.textContent = formatScaleToolbarStatus(snapshot.plan.scale);
     }
+    syncRoomsSidebar(snapshot.plan, state, getBaseboardResult(snapshot.plan));
   }
 
   function ensureBackgroundImageLoaded(background) {
@@ -1142,6 +1414,22 @@ export function mountEditorRuntime(options) {
     return true;
   }
 
+  function syncRoomSelectionFromRectangle(rectangle) {
+    if (rectangle?.kind === "wallRect") {
+      store.dispatch({ type: "editor/roomSelection/clear" });
+      return;
+    }
+    const roomEntryId = rectangle ? deriveRoomEntryIdForRectangle(rectangle) : null;
+    if (!roomEntryId) {
+      store.dispatch({ type: "editor/roomSelection/clear" });
+      return;
+    }
+    store.dispatch({
+      type: "editor/roomSelection/set",
+      roomId: roomEntryId
+    });
+  }
+
   function adjustSelectedRectangleWallCm(side, delta) {
     const snapshot = store.getState();
     const selectedRectangle = getSelectedRectangle(snapshot.plan, snapshot.editorState);
@@ -1269,6 +1557,155 @@ export function mountEditorRuntime(options) {
     return true;
   }
 
+  function completeMergeSelection() {
+    const snapshot = store.getState();
+    const mergeState = getMergeCompletionState(snapshot.plan, snapshot.editorState);
+    if (!mergeState.canComplete) {
+      return false;
+    }
+
+    const selectedRectangleId = normalizeRectangleIdForUi(snapshot.editorState.selection.rectangleId);
+    const beforePlan = snapshot.plan;
+    const nextState = store.dispatch({
+      type: "plan/rooms/mergeRectangles",
+      rectangleIds: mergeState.rectangleIds
+    });
+    if (nextState.plan === beforePlan) {
+      return false;
+    }
+
+    const keepSelectionId = selectedRectangleId && mergeState.rectangleIds.includes(selectedRectangleId)
+      ? selectedRectangleId
+      : mergeState.rectangleIds[0] ?? null;
+    store.dispatch({ type: "editor/merge/clear" });
+    store.dispatch({ type: "editor/tool/set", tool: "navigate" });
+    if (keepSelectionId) {
+      store.dispatch({ type: "editor/selection/set", rectangleId: keepSelectionId });
+    }
+    syncEditorChrome();
+    return true;
+  }
+
+  function cancelMergeSelection() {
+    const snapshot = store.getState();
+    const hasMergeSelection = Array.isArray(snapshot.editorState.mergeSelection?.rectangleIds)
+      && snapshot.editorState.mergeSelection.rectangleIds.length > 0;
+    const isMergeTool = snapshot.editorState.tool === "mergeRoom";
+    if (!hasMergeSelection && !isMergeTool) {
+      return false;
+    }
+    store.dispatch({ type: "editor/merge/clear" });
+    store.dispatch({ type: "editor/tool/set", tool: "navigate" });
+    syncEditorChrome();
+    return true;
+  }
+
+  function dissolveSelectedRectangleRoom() {
+    const snapshot = store.getState();
+    const selectedRectangle = getSelectedRectangle(snapshot.plan, snapshot.editorState);
+    if (!selectedRectangle || typeof selectedRectangle.roomId !== "string" || !selectedRectangle.roomId) {
+      return false;
+    }
+    store.dispatch({
+      type: "plan/rooms/dissolveRoom",
+      roomId: selectedRectangle.roomId
+    });
+    store.dispatch({ type: "editor/merge/clear" });
+    return true;
+  }
+
+  function getMergeCompletionState(plan, editorState) {
+    const mergeSelectionIds = Array.isArray(editorState.mergeSelection?.rectangleIds)
+      ? editorState.mergeSelection.rectangleIds
+      : [];
+    const rectangleById = new Map(plan.entities.rectangles.map((rectangle) => [rectangle.id, rectangle]));
+    const rectangleIds = [];
+    let hasInvalidSelection = false;
+
+    for (const rectangleId of mergeSelectionIds) {
+      const normalizedRectangleId = normalizeRectangleIdForUi(rectangleId);
+      if (!normalizedRectangleId) {
+        hasInvalidSelection = true;
+        continue;
+      }
+      const rectangle = rectangleById.get(normalizedRectangleId);
+      if (!rectangle || rectangle.kind === "wallRect") {
+        hasInvalidSelection = true;
+        continue;
+      }
+      if (!rectangleIds.includes(normalizedRectangleId)) {
+        rectangleIds.push(normalizedRectangleId);
+      }
+    }
+
+    const selectedCount = rectangleIds.length;
+    let isConnected = false;
+    if (selectedCount >= 2) {
+      const adjacency = deriveTouchingAdjacency(plan.entities.rectangles, {
+        metersPerWorldUnit: plan.scale?.metersPerWorldUnit
+      });
+      isConnected = isConnectedSelection(rectangleIds, adjacency);
+    }
+
+    let statusLabel = "select at least 2 rectangles";
+    if (hasInvalidSelection) {
+      statusLabel = "selection has non-room or missing rectangles";
+    } else if (selectedCount < 2) {
+      statusLabel = "select at least 2 rectangles";
+    } else if (!isConnected) {
+      statusLabel = "selection must be connected by touching";
+    } else {
+      statusLabel = "ready";
+    }
+
+    return {
+      rectangleIds,
+      selectedCount,
+      isConnected,
+      hasInvalidSelection,
+      canComplete: !hasInvalidSelection && selectedCount >= 2 && isConnected,
+      statusLabel
+    };
+  }
+
+  function getDragGroupRectangleIds(plan, rectangle) {
+    if (!rectangle || rectangle.kind === "wallRect") {
+      return [rectangle?.id].filter(Boolean);
+    }
+    const roomId = normalizeRectangleIdForUi(rectangle.roomId);
+    if (!roomId) {
+      return [rectangle.id];
+    }
+    const roomRectangles = plan.entities.rectangles.filter((candidate) => (
+      candidate.kind !== "wallRect" &&
+      candidate.roomId === roomId
+    ));
+    if (roomRectangles.length <= 1) {
+      return [rectangle.id];
+    }
+    return roomRectangles.map((candidate) => candidate.id);
+  }
+
+  function applyRectangleGeometryUpdates(plan, rectangleUpdates, options = {}) {
+    const normalizedUpdates = normalizeRectangleGeometryUpdates(plan.entities.rectangles, rectangleUpdates);
+    if (normalizedUpdates.length === 0) {
+      return false;
+    }
+
+    if (options.enforceRoomConnectivity) {
+      const nextRectangles = buildRectanglesAfterGeometryUpdates(plan.entities.rectangles, normalizedUpdates);
+      if (!roomsConnectedAfterGeometryUpdates(plan, nextRectangles, normalizedUpdates)) {
+        return false;
+      }
+    }
+
+    store.dispatch({
+      type: "plan/rectangles/setManyGeometry",
+      rectangles: normalizedUpdates
+    });
+    return true;
+  }
+
   function syncRoomControls(plan, editorState) {
     const selectedRectangle = getSelectedRectangle(plan, editorState);
     const room = getRoomForRectangle(plan, selectedRectangle);
@@ -1291,14 +1728,22 @@ export function mountEditorRuntime(options) {
     if (controls.roomNameInput) {
       controls.roomNameInput.disabled = !canEditRoom;
       if (document.activeElement !== controls.roomNameInput) {
-        controls.roomNameInput.value = canEditRoom ? roomName : "";
+        if (canEditRoom) {
+          controls.roomNameInput.value = roomName;
+        } else {
+          controls.roomNameInput.value = "";
+        }
       }
     }
 
     if (controls.roomTypeSelect) {
       controls.roomTypeSelect.disabled = !canEditRoom;
       if (document.activeElement !== controls.roomTypeSelect) {
-        controls.roomTypeSelect.value = roomType;
+        if (canEditRoom) {
+          controls.roomTypeSelect.value = roomType;
+        } else {
+          controls.roomTypeSelect.value = DEFAULT_ROOM_TYPE;
+        }
       }
     }
 
@@ -1308,6 +1753,200 @@ export function mountEditorRuntime(options) {
 
     if (controls.roomClearButton) {
       controls.roomClearButton.disabled = !canEditRoom || !room;
+    }
+
+  }
+
+  function syncMergeControls(plan, editorState) {
+    const mergeState = getMergeCompletionState(plan, editorState);
+    const mergeMode = editorState.tool === "mergeRoom";
+    const selectedRectangle = getSelectedRectangle(plan, editorState);
+    const selectedRoom = getRoomForRectangle(plan, selectedRectangle);
+
+    if (controls.mergeStatusElement) {
+      if (mergeState.selectedCount > 0 || mergeState.hasInvalidSelection) {
+        controls.mergeStatusElement.textContent = `${mergeState.selectedCount} selected (${mergeState.statusLabel})`;
+      } else if (mergeMode) {
+        controls.mergeStatusElement.textContent = "Select touching room rectangles";
+      } else {
+        controls.mergeStatusElement.textContent = "Use Merge Room tool to select rectangles";
+      }
+    }
+
+    if (controls.roomMergeCompleteButton) {
+      controls.roomMergeCompleteButton.disabled = !mergeState.canComplete;
+    }
+
+    if (controls.roomMergeCancelButton) {
+      controls.roomMergeCancelButton.disabled = !(mergeMode || mergeState.selectedCount > 0);
+    }
+
+    if (controls.roomDissolveButton) {
+      controls.roomDissolveButton.disabled = !selectedRoom;
+    }
+  }
+
+  function syncAreaScaleCalibrationControl(plan, editorState) {
+    if (!controls.calibrateScaleByAreaButton) {
+      return;
+    }
+
+    const activeRoomEntry = getActiveRoomEntry(plan, editorState);
+    const roomAreaWorld = activeRoomEntry
+      ? computeRoomMetrics(activeRoomEntry, plan, null, null).areaWorld
+      : 0;
+    const canCalibrate = Number.isFinite(roomAreaWorld) && roomAreaWorld > 0;
+    controls.calibrateScaleByAreaButton.disabled = !canCalibrate;
+    controls.calibrateScaleByAreaButton.title = canCalibrate
+      ? `Calibrate using area of ${activeRoomEntry.name}`
+      : "Select a room first";
+  }
+
+  function activateRoomFromSidebar(roomId, options = {}) {
+    const normalizedRoomId = normalizeRectangleIdForUi(roomId);
+    if (!normalizedRoomId) {
+      return false;
+    }
+    const snapshot = store.getState();
+    const rooms = deriveSidebarRooms(snapshot.plan);
+    const roomEntry = rooms.find((entry) => entry.id === normalizedRoomId);
+    if (!roomEntry) {
+      return false;
+    }
+
+    store.dispatch({
+      type: "editor/roomSelection/set",
+      roomId: roomEntry.id
+    });
+
+    const firstRectangleId = roomEntry.rectangleIds[0] ?? null;
+    if (firstRectangleId) {
+      store.dispatch({
+        type: "editor/selection/set",
+        rectangleId: firstRectangleId
+      });
+    }
+
+    if (options.center) {
+      centerCameraOnRoom(snapshot.plan, snapshot.editorState, roomEntry);
+    }
+
+    syncEditorChrome();
+    return true;
+  }
+
+  function centerCameraOnRoom(plan, editorState, roomEntry) {
+    const rectangleById = new Map(plan.entities.rectangles.map((rectangle) => [rectangle.id, rectangle]));
+    const roomRectangles = roomEntry.rectangleIds
+      .map((rectangleId) => rectangleById.get(rectangleId))
+      .filter((rectangle) => rectangle && rectangle.kind !== "wallRect");
+    if (roomRectangles.length === 0) {
+      return false;
+    }
+
+    const bounds = getRectanglesBounds(roomRectangles, {
+      getBounds: (rectangle) => getRectangleHitBounds(rectangle, plan.scale)
+    });
+    if (!bounds) {
+      return false;
+    }
+
+    const viewportWidth = Math.max(1, editorState.viewport?.cssWidth ?? 1);
+    const viewportHeight = Math.max(1, editorState.viewport?.cssHeight ?? 1);
+    const zoom = editorState.camera.zoom;
+    const centerX = bounds.x + bounds.w / 2;
+    const centerY = bounds.y + bounds.h / 2;
+    const cameraX = centerX - viewportWidth / (2 * zoom);
+    const cameraY = centerY - viewportHeight / (2 * zoom);
+
+    store.dispatch({
+      type: "editor/camera/setPose",
+      x: cameraX,
+      y: cameraY
+    });
+    return true;
+  }
+
+  function syncRoomsSidebar(plan, editorState, baseboard) {
+    const { roomListElement, roomSummaryElement, roomTotalsElement, roomDetailsElement } = controls;
+    if (!roomListElement && !roomSummaryElement && !roomTotalsElement && !roomDetailsElement) {
+      return;
+    }
+
+    const roomEntries = deriveSidebarRooms(plan);
+    const effectiveActiveRoomId = deriveEffectiveActiveRoomId(plan, editorState, roomEntries);
+    const metersPerWorldUnit = plan.scale?.metersPerWorldUnit;
+    const totalMetrics = computeRoomsAggregateMetrics(roomEntries, plan, baseboard, metersPerWorldUnit);
+
+    if (roomSummaryElement) {
+      const roomCountLabel = `${roomEntries.length} room${roomEntries.length === 1 ? "" : "s"}`;
+      roomSummaryElement.textContent = roomEntries.length === 0
+        ? "No rooms tagged yet."
+        : `${roomCountLabel} • click to activate • double-click to center`;
+    }
+
+    if (roomTotalsElement) {
+      roomTotalsElement.textContent =
+        `Total: area ${totalMetrics.areaLabel} • baseboard ${totalMetrics.baseboardLabel}`;
+    }
+
+    if (roomListElement) {
+      roomListElement.replaceChildren();
+      if (roomEntries.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "rooms-empty";
+        empty.textContent = "Create or merge room rectangles to populate this list.";
+        roomListElement.append(empty);
+      } else {
+        for (const roomEntry of roomEntries) {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "room-list-item";
+          if (roomEntry.id === effectiveActiveRoomId) {
+            item.classList.add("active");
+          }
+          item.dataset.roomItemId = roomEntry.id;
+
+          const swatch = document.createElement("span");
+          swatch.className = "room-list-swatch";
+          swatch.style.background = roomColor(roomEntry.id, 0.9);
+
+          const name = document.createElement("span");
+          name.className = "room-list-name";
+          name.textContent = roomEntry.name;
+
+          const meta = document.createElement("span");
+          meta.className = "room-list-meta";
+          meta.textContent = `${roomEntry.rectangleIds.length} rect`;
+          if (roomEntry.rectangleIds.length !== 1) {
+            meta.textContent += "s";
+          }
+
+          item.append(swatch, name, meta);
+          roomListElement.append(item);
+        }
+      }
+    }
+
+    if (roomDetailsElement) {
+      const activeRoom = roomEntries.find((entry) => entry.id === effectiveActiveRoomId) ?? null;
+      if (!activeRoom) {
+        roomDetailsElement.innerHTML = "Select a room to view its area and baseboard totals.";
+      } else {
+        const metrics = computeRoomMetrics(activeRoom, plan, baseboard, metersPerWorldUnit);
+        const displayId = activeRoom.roomId ?? activeRoom.rectangleIds[0] ?? activeRoom.id;
+        const displayType = activeRoom.roomId
+          ? formatRoomTypeLabel(activeRoom.roomType)
+          : "unassigned";
+        roomDetailsElement.innerHTML =
+          `<strong>${escapeHtmlForOverlay(activeRoom.name)}</strong><br>` +
+          `ID: ${escapeHtmlForOverlay(displayId)}<br>` +
+          `Type: ${escapeHtmlForOverlay(displayType)}<br>` +
+          `Rectangles: ${activeRoom.rectangleIds.length}<br>` +
+          `Area: ${escapeHtmlForOverlay(metrics.areaLabel)}<br>` +
+          `Baseboard: ${escapeHtmlForOverlay(metrics.baseboardLabel)}<br>` +
+          `Color: <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${roomColor(activeRoom.id, 0.9)};"></span>`;
+      }
     }
   }
 
@@ -1345,6 +1984,45 @@ export function mountEditorRuntime(options) {
       referenceLine: calibration.referenceLine,
       metersPerWorldUnit: calibration.metersPerWorldUnit
     });
+    return true;
+  }
+
+  function calibrateScaleByActiveRoomArea() {
+    const snapshot = store.getState();
+    const activeRoomEntry = getActiveRoomEntry(snapshot.plan, snapshot.editorState);
+    if (!activeRoomEntry) {
+      return false;
+    }
+
+    const metrics = computeRoomMetrics(activeRoomEntry, snapshot.plan, null, snapshot.plan.scale?.metersPerWorldUnit);
+    if (!Number.isFinite(metrics.areaWorld) || metrics.areaWorld <= 0) {
+      window.alert("Selected room has no measurable area.");
+      return false;
+    }
+
+    const promptDefault = Number.isFinite(metrics.areaM2) && metrics.areaM2 > 0
+      ? metrics.areaM2.toFixed(2)
+      : "";
+    const input = window.prompt(
+      `Enter real-world area for "${activeRoomEntry.name}" (m²):`,
+      promptDefault
+    );
+    if (input == null) {
+      return false;
+    }
+
+    const parsed = Number.parseFloat(String(input).trim().replace(",", "."));
+    const metersPerWorldUnit = computeMetersPerWorldUnitFromArea(metrics.areaWorld, parsed);
+    if (!Number.isFinite(metersPerWorldUnit) || metersPerWorldUnit <= 0) {
+      window.alert("Please enter a positive area in square meters.");
+      return false;
+    }
+
+    store.dispatch({
+      type: "plan/scale/setMetersPerWorldUnit",
+      metersPerWorldUnit
+    });
+    syncEditorChrome();
     return true;
   }
 }
@@ -1478,15 +2156,18 @@ function formatScaleToolbarStatus(scale) {
   }
 
   const meters = scale.referenceLine?.meters;
-  const refLabel = Number.isFinite(meters) ? `${meters}m ref` : "ref set";
+  const refLabel = Number.isFinite(meters) ? `${meters}m ref` : "no ref";
   return `Scale ${metersPerWorldUnit.toFixed(4)} m/u (${refLabel})`;
 }
 
 function formatScaleDetail(scale) {
   const metersPerWorldUnit = scale?.metersPerWorldUnit;
   const referenceLine = scale?.referenceLine;
-  if (!Number.isFinite(metersPerWorldUnit) || !referenceLine) {
+  if (!Number.isFinite(metersPerWorldUnit) || metersPerWorldUnit <= 0) {
     return "Scale not calibrated yet";
+  }
+  if (!referenceLine) {
+    return `Scale ${metersPerWorldUnit.toFixed(5)} m/unit (calibrated without reference line)`;
   }
 
   const worldLength = Math.hypot(referenceLine.x1 - referenceLine.x0, referenceLine.y1 - referenceLine.y0);
@@ -1579,6 +2260,85 @@ function formatSelectedRectangleRoomTagOverlay(rectangle, plan) {
     return "unassigned";
   }
   return `${escapeHtmlForOverlay(room.name)} (${formatRoomTypeLabel(room.roomType)}) [${room.id}]`;
+}
+
+function computeRoomMetrics(roomEntry, plan, baseboard, metersPerWorldUnit) {
+  const rectangleById = new Map(
+    (Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : []).map((rectangle) => [rectangle.id, rectangle])
+  );
+  let areaWorld = 0;
+  for (const rectangleId of roomEntry.rectangleIds) {
+    const rectangle = rectangleById.get(rectangleId);
+    if (!rectangle || rectangle.kind === "wallRect") {
+      continue;
+    }
+    areaWorld += rectangle.w * rectangle.h;
+  }
+
+  const segments = Array.isArray(baseboard?.segments) ? baseboard.segments : [];
+  let baseboardWorld = 0;
+  const roomRectangleIdSet = new Set(roomEntry.rectangleIds);
+  for (const segment of segments) {
+    if (roomEntry.roomId) {
+      if (segment?.roomId !== roomEntry.roomId) {
+        continue;
+      }
+    } else {
+      if (!roomRectangleIdSet.has(segment?.rectangleId) || segment?.roomId != null) {
+        continue;
+      }
+    }
+    if (Number.isFinite(segment.lengthWorld)) {
+      baseboardWorld += segment.lengthWorld;
+    }
+  }
+
+  const areaM2 = Number.isFinite(metersPerWorldUnit) && metersPerWorldUnit > 0
+    ? areaWorld * metersPerWorldUnit * metersPerWorldUnit
+    : null;
+  const baseboardMeters = Number.isFinite(metersPerWorldUnit) && metersPerWorldUnit > 0
+    ? baseboardWorld * metersPerWorldUnit
+    : null;
+
+  return {
+    areaWorld,
+    areaM2,
+    baseboardWorld,
+    baseboardMeters,
+    areaLabel: areaM2 == null ? `${areaWorld.toFixed(1)} wu²` : `${areaM2.toFixed(2)} m² (${areaWorld.toFixed(1)} wu²)`,
+    baseboardLabel: baseboardMeters == null
+      ? `${baseboardWorld.toFixed(1)} wu`
+      : `${baseboardMeters.toFixed(2)} m (${baseboardWorld.toFixed(1)} wu)`
+  };
+}
+
+function computeRoomsAggregateMetrics(roomEntries, plan, baseboard, metersPerWorldUnit) {
+  const entries = Array.isArray(roomEntries) ? roomEntries : [];
+  let areaWorld = 0;
+  let baseboardWorld = 0;
+  for (const roomEntry of entries) {
+    const metrics = computeRoomMetrics(roomEntry, plan, baseboard, metersPerWorldUnit);
+    areaWorld += metrics.areaWorld;
+    baseboardWorld += metrics.baseboardWorld;
+  }
+
+  const areaM2 = Number.isFinite(metersPerWorldUnit) && metersPerWorldUnit > 0
+    ? areaWorld * metersPerWorldUnit * metersPerWorldUnit
+    : null;
+  const baseboardMeters = Number.isFinite(metersPerWorldUnit) && metersPerWorldUnit > 0
+    ? baseboardWorld * metersPerWorldUnit
+    : null;
+
+  return {
+    areaWorld,
+    areaM2,
+    baseboardWorld,
+    baseboardMeters,
+    areaLabel: areaM2 == null ? `${areaWorld.toFixed(1)} wu²` : `${areaM2.toFixed(2)} m² (${areaWorld.toFixed(1)} wu²)`,
+    baseboardLabel: baseboardMeters == null
+      ? `${baseboardWorld.toFixed(1)} wu`
+      : `${baseboardMeters.toFixed(2)} m (${baseboardWorld.toFixed(1)} wu)`
+  };
 }
 
 function formatSelectedRectangleWallCmStatus(rectangle) {
@@ -1874,6 +2634,414 @@ function normalizeRoomTypeForUi(roomType) {
   }
 }
 
+const ROOM_COLOR_PALETTE = [
+  [56, 161, 105],
+  [214, 93, 147],
+  [71, 130, 218],
+  [191, 132, 68],
+  [132, 84, 214],
+  [38, 156, 156],
+  [166, 96, 176],
+  [224, 118, 90]
+];
+
+function roomColor(roomId, alpha = 1) {
+  const index = Math.abs(hashString(roomId)) % ROOM_COLOR_PALETTE.length;
+  const [red, green, blue] = ROOM_COLOR_PALETTE[index];
+  const resolvedAlpha = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+  return `rgba(${red}, ${green}, ${blue}, ${resolvedAlpha})`;
+}
+
+function hashString(value) {
+  if (typeof value !== "string") {
+    return 0;
+  }
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(index);
+    hash |= 0;
+  }
+  return hash;
+}
+
+function normalizeRectangleGeometryUpdates(rectangles, updates) {
+  if (!Array.isArray(rectangles) || !Array.isArray(updates) || updates.length === 0) {
+    return [];
+  }
+  const rectangleById = new Map(rectangles.map((rectangle) => [rectangle.id, rectangle]));
+  const normalized = [];
+  for (const update of updates) {
+    const rectangleId = normalizeRectangleIdForUi(update?.id);
+    if (!rectangleId) {
+      continue;
+    }
+    const rectangle = rectangleById.get(rectangleId);
+    if (!rectangle) {
+      continue;
+    }
+    if (
+      !Number.isFinite(update.x) ||
+      !Number.isFinite(update.y) ||
+      !Number.isFinite(update.w) ||
+      !Number.isFinite(update.h) ||
+      update.w <= 0 ||
+      update.h <= 0
+    ) {
+      continue;
+    }
+    normalized.push({
+      id: rectangleId,
+      x: update.x,
+      y: update.y,
+      w: update.w,
+      h: update.h
+    });
+  }
+  return normalized;
+}
+
+function buildRectanglesAfterGeometryUpdates(rectangles, updates) {
+  const updateById = new Map(updates.map((update) => [update.id, update]));
+  return rectangles.map((rectangle) => {
+    const update = updateById.get(rectangle.id);
+    if (!update) {
+      return rectangle;
+    }
+    return {
+      ...rectangle,
+      x: update.x,
+      y: update.y,
+      w: update.w,
+      h: update.h
+    };
+  });
+}
+
+function roomsConnectedAfterGeometryUpdates(plan, nextRectangles, updates) {
+  const updatedRectangleIds = new Set(updates.map((update) => update.id));
+  const currentRectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const currentById = new Map(currentRectangles.map((rectangle) => [rectangle.id, rectangle]));
+  const affectedRoomIds = new Set();
+
+  for (const rectangleId of updatedRectangleIds) {
+    const currentRectangle = currentById.get(rectangleId);
+    const roomId = normalizeRectangleIdForUi(currentRectangle?.roomId);
+    if (roomId) {
+      affectedRoomIds.add(roomId);
+    }
+  }
+
+  if (affectedRoomIds.size === 0) {
+    return true;
+  }
+
+  const nextAdjacency = deriveTouchingAdjacency(nextRectangles, {
+    metersPerWorldUnit: plan?.scale?.metersPerWorldUnit
+  });
+  const nextById = new Map(nextRectangles.map((rectangle) => [rectangle.id, rectangle]));
+  const rooms = Array.isArray(plan?.entities?.rooms) ? plan.entities.rooms : [];
+
+  for (const room of rooms) {
+    const roomId = normalizeRectangleIdForUi(room?.id);
+    if (!roomId || !affectedRoomIds.has(roomId)) {
+      continue;
+    }
+    const roomRectangleIds = Array.isArray(room?.rectangleIds)
+      ? room.rectangleIds.filter((rectangleId) => {
+        const rectangle = nextById.get(rectangleId);
+        return rectangle && rectangle.kind !== "wallRect" && rectangle.roomId === roomId;
+      })
+      : [];
+    if (roomRectangleIds.length <= 1) {
+      continue;
+    }
+    if (!isConnectedSelection(roomRectangleIds, nextAdjacency)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizeRectangleIdForUi(rectangleId) {
+  if (typeof rectangleId !== "string") {
+    return null;
+  }
+  const trimmed = rectangleId.trim();
+  return trimmed || null;
+}
+
+function isInternalSeamSlideAdjustEnabled(editorState) {
+  return Boolean(editorState?.mergeOptions?.allowInternalSeamAdjust);
+}
+
+function deriveInternalSeamSlideStartDescriptor(plan, rectangleId, handleName) {
+  const side = getSingleSideForResizeHandle(handleName);
+  if (!side) {
+    return null;
+  }
+
+  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const rectangleById = new Map(rectangles.map((rectangle) => [rectangle.id, rectangle]));
+  const selectedRectangle = rectangleById.get(rectangleId);
+  if (!selectedRectangle || selectedRectangle.kind === "wallRect") {
+    return null;
+  }
+
+  const roomId = normalizeRectangleIdForUi(selectedRectangle.roomId);
+  if (!roomId) {
+    return null;
+  }
+  const roomSeams = deriveRoomSeams(plan, roomId, {
+    metersPerWorldUnit: plan?.scale?.metersPerWorldUnit
+  });
+  const matchingSeams = roomSeams.seams.filter((seam) => (
+    seam.rectangleAId === rectangleId && seam.sideA === side && seam.fullA
+  ) || (
+    seam.rectangleBId === rectangleId && seam.sideB === side && seam.fullB
+  ));
+  if (matchingSeams.length !== 1) {
+    return null;
+  }
+
+  const seam = matchingSeams[0];
+  const selectedIsA = seam.rectangleAId === rectangleId && seam.sideA === side;
+  const partnerRectangleId = selectedIsA ? seam.rectangleBId : seam.rectangleAId;
+  const partnerSide = selectedIsA ? seam.sideB : seam.sideA;
+  const partnerRectangle = rectangleById.get(partnerRectangleId);
+  if (!partnerRectangle || partnerRectangle.kind === "wallRect") {
+    return null;
+  }
+  if (getOppositeSide(side) !== partnerSide) {
+    return null;
+  }
+
+  const pair = buildInternalSeamPair(selectedRectangle, side, partnerRectangle);
+  if (!pair) {
+    return null;
+  }
+
+  return {
+    axis: pair.axis,
+    selectedRectangle: pair.selected,
+    partnerRectangle: pair.partner
+  };
+}
+
+function deriveInternalSeamSlideUpdates(seamSlideDescriptor, pointerWorld, options = {}) {
+  if (!seamSlideDescriptor || !pointerWorld || !Number.isFinite(pointerWorld.x) || !Number.isFinite(pointerWorld.y)) {
+    return [];
+  }
+  const minSize = Number.isFinite(options.minSize) && options.minSize > 0 ? options.minSize : 16;
+  const axis = seamSlideDescriptor.axis;
+  const rawCoordinate = axis === "vertical" ? pointerWorld.x : pointerWorld.y;
+  if (!Number.isFinite(rawCoordinate)) {
+    return [];
+  }
+
+  const selected = seamSlideDescriptor.selectedRectangle;
+  const partner = seamSlideDescriptor.partnerRectangle;
+  const minCoordinate = Math.max(selected.minCoordinate(minSize), partner.minCoordinate(minSize));
+  const maxCoordinate = Math.min(selected.maxCoordinate(minSize), partner.maxCoordinate(minSize));
+  if (!Number.isFinite(minCoordinate) || !Number.isFinite(maxCoordinate) || minCoordinate > maxCoordinate) {
+    return [];
+  }
+  const coordinate = clampScreenValue(rawCoordinate, minCoordinate, maxCoordinate);
+  const selectedUpdate = selected.fromCoordinate(coordinate);
+  const partnerUpdate = partner.fromCoordinate(coordinate);
+
+  if (!selectedUpdate || !partnerUpdate) {
+    return [];
+  }
+  return [selectedUpdate, partnerUpdate];
+}
+
+function buildInternalSeamPair(selectedRectangle, selectedSide, partnerRectangle) {
+  switch (selectedSide) {
+    case "right":
+      return {
+        axis: "vertical",
+        selected: {
+          id: selectedRectangle.id,
+          minCoordinate: (minSize) => selectedRectangle.x + minSize,
+          maxCoordinate: () => Number.POSITIVE_INFINITY,
+          fromCoordinate: (coordinate) => ({
+            id: selectedRectangle.id,
+            x: selectedRectangle.x,
+            y: selectedRectangle.y,
+            w: coordinate - selectedRectangle.x,
+            h: selectedRectangle.h
+          })
+        },
+        partner: {
+          id: partnerRectangle.id,
+          minCoordinate: () => Number.NEGATIVE_INFINITY,
+          maxCoordinate: (minSize) => partnerRectangle.x + partnerRectangle.w - minSize,
+          fromCoordinate: (coordinate) => ({
+            id: partnerRectangle.id,
+            x: coordinate,
+            y: partnerRectangle.y,
+            w: partnerRectangle.x + partnerRectangle.w - coordinate,
+            h: partnerRectangle.h
+          })
+        }
+      };
+
+    case "left":
+      return {
+        axis: "vertical",
+        selected: {
+          id: selectedRectangle.id,
+          minCoordinate: () => Number.NEGATIVE_INFINITY,
+          maxCoordinate: (minSize) => selectedRectangle.x + selectedRectangle.w - minSize,
+          fromCoordinate: (coordinate) => ({
+            id: selectedRectangle.id,
+            x: coordinate,
+            y: selectedRectangle.y,
+            w: selectedRectangle.x + selectedRectangle.w - coordinate,
+            h: selectedRectangle.h
+          })
+        },
+        partner: {
+          id: partnerRectangle.id,
+          minCoordinate: (minSize) => partnerRectangle.x + minSize,
+          maxCoordinate: () => Number.POSITIVE_INFINITY,
+          fromCoordinate: (coordinate) => ({
+            id: partnerRectangle.id,
+            x: partnerRectangle.x,
+            y: partnerRectangle.y,
+            w: coordinate - partnerRectangle.x,
+            h: partnerRectangle.h
+          })
+        }
+      };
+
+    case "bottom":
+      return {
+        axis: "horizontal",
+        selected: {
+          id: selectedRectangle.id,
+          minCoordinate: (minSize) => selectedRectangle.y + minSize,
+          maxCoordinate: () => Number.POSITIVE_INFINITY,
+          fromCoordinate: (coordinate) => ({
+            id: selectedRectangle.id,
+            x: selectedRectangle.x,
+            y: selectedRectangle.y,
+            w: selectedRectangle.w,
+            h: coordinate - selectedRectangle.y
+          })
+        },
+        partner: {
+          id: partnerRectangle.id,
+          minCoordinate: () => Number.NEGATIVE_INFINITY,
+          maxCoordinate: (minSize) => partnerRectangle.y + partnerRectangle.h - minSize,
+          fromCoordinate: (coordinate) => ({
+            id: partnerRectangle.id,
+            x: partnerRectangle.x,
+            y: coordinate,
+            w: partnerRectangle.w,
+            h: partnerRectangle.y + partnerRectangle.h - coordinate
+          })
+        }
+      };
+
+    case "top":
+      return {
+        axis: "horizontal",
+        selected: {
+          id: selectedRectangle.id,
+          minCoordinate: () => Number.NEGATIVE_INFINITY,
+          maxCoordinate: (minSize) => selectedRectangle.y + selectedRectangle.h - minSize,
+          fromCoordinate: (coordinate) => ({
+            id: selectedRectangle.id,
+            x: selectedRectangle.x,
+            y: coordinate,
+            w: selectedRectangle.w,
+            h: selectedRectangle.y + selectedRectangle.h - coordinate
+          })
+        },
+        partner: {
+          id: partnerRectangle.id,
+          minCoordinate: (minSize) => partnerRectangle.y + minSize,
+          maxCoordinate: () => Number.POSITIVE_INFINITY,
+          fromCoordinate: (coordinate) => ({
+            id: partnerRectangle.id,
+            x: partnerRectangle.x,
+            y: partnerRectangle.y,
+            w: partnerRectangle.w,
+            h: coordinate - partnerRectangle.y
+          })
+        }
+      };
+
+    default:
+      return null;
+  }
+}
+
+function getSingleSideForResizeHandle(handleName) {
+  switch (handleName) {
+    case "n":
+      return "top";
+    case "e":
+      return "right";
+    case "s":
+      return "bottom";
+    case "w":
+      return "left";
+    default:
+      return null;
+  }
+}
+
+function getOppositeSide(side) {
+  switch (side) {
+    case "top":
+      return "bottom";
+    case "right":
+      return "left";
+    case "bottom":
+      return "top";
+    case "left":
+      return "right";
+    default:
+      return null;
+  }
+}
+
+function isResizeHandleBlockedByLockedSides(handleName, lockedSides) {
+  if (!(lockedSides instanceof Set) || lockedSides.size === 0) {
+    return false;
+  }
+  const affectedSides = getSidesForResizeHandle(handleName);
+  if (affectedSides.length === 0) {
+    return false;
+  }
+  return affectedSides.some((side) => lockedSides.has(side));
+}
+
+function getSidesForResizeHandle(handleName) {
+  switch (handleName) {
+    case "n":
+      return ["top"];
+    case "s":
+      return ["bottom"];
+    case "e":
+      return ["right"];
+    case "w":
+      return ["left"];
+    case "nw":
+      return ["top", "left"];
+    case "ne":
+      return ["top", "right"];
+    case "sw":
+      return ["bottom", "left"];
+    case "se":
+      return ["bottom", "right"];
+    default:
+      return [];
+  }
+}
+
 function normalizeWallSideValue(value) {
   if (!Number.isFinite(value) || value < 0) {
     return 0;
@@ -2075,6 +3243,39 @@ function clampScreenValue(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function getRectanglesBounds(rectangles, options = {}) {
+  if (!Array.isArray(rectangles) || rectangles.length === 0) {
+    return null;
+  }
+  const getBounds = typeof options.getBounds === "function" ? options.getBounds : null;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const rectangle of rectangles) {
+    const bounds = getBounds ? getBounds(rectangle) : rectangle;
+    if (!bounds || !Number.isFinite(bounds.x) || !Number.isFinite(bounds.y) || !Number.isFinite(bounds.w) || !Number.isFinite(bounds.h)) {
+      continue;
+    }
+    minX = Math.min(minX, bounds.x);
+    minY = Math.min(minY, bounds.y);
+    maxX = Math.max(maxX, bounds.x + bounds.w);
+    maxY = Math.max(maxY, bounds.y + bounds.h);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return null;
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    w: Math.max(0, maxX - minX),
+    h: Math.max(0, maxY - minY)
+  };
+}
+
 function formatBackgroundImageStatus(backgroundImageState) {
   switch (backgroundImageState?.status) {
     case "ready":
@@ -2190,21 +3391,166 @@ function getRoomForRectangle(plan, rectangle) {
   return rooms.find((room) => room?.id === roomId) ?? null;
 }
 
+function deriveSidebarRooms(plan) {
+  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const rooms = Array.isArray(plan?.entities?.rooms) ? plan.entities.rooms : [];
+  const groupedRectangleIdsByEntryId = new Map();
+  const roomEntryMetadataById = new Map();
+
+  for (const rectangle of rectangles) {
+    if (!rectangle || rectangle.kind === "wallRect") {
+      continue;
+    }
+    const entryId = deriveRoomEntryIdForRectangle(rectangle);
+    if (!groupedRectangleIdsByEntryId.has(entryId)) {
+      groupedRectangleIdsByEntryId.set(entryId, []);
+    }
+    groupedRectangleIdsByEntryId.get(entryId).push(rectangle.id);
+
+    if (!roomEntryMetadataById.has(entryId)) {
+      const roomId = normalizeRectangleIdForUi(rectangle.roomId);
+      roomEntryMetadataById.set(entryId, {
+        roomId,
+        roomType: DEFAULT_ROOM_TYPE,
+        name: roomId ? roomId : rectangle.id
+      });
+    }
+  }
+
+  const roomEntityById = new Map(
+    rooms
+      .filter((room) => room && typeof room.id === "string" && room.id)
+      .map((room) => [room.id, room])
+  );
+
+  const roomEntries = [];
+  for (const [entryId, rectangleIds] of groupedRectangleIdsByEntryId.entries()) {
+    const metadata = roomEntryMetadataById.get(entryId) ?? null;
+    const roomId = normalizeRectangleIdForUi(metadata?.roomId);
+    const roomEntity = roomId ? (roomEntityById.get(roomId) ?? null) : null;
+    const roomName = normalizeRoomEntryName(roomEntity?.name, metadata?.name ?? entryId);
+    roomEntries.push({
+      id: entryId,
+      roomId,
+      name: roomName,
+      roomType: normalizeRoomTypeForUi(roomEntity?.roomType),
+      rectangleIds: Array.from(new Set(rectangleIds))
+    });
+  }
+
+  roomEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id));
+  return roomEntries;
+}
+
+function deriveEffectiveActiveRoomId(plan, editorState, roomEntries = null) {
+  const entries = Array.isArray(roomEntries) ? roomEntries : deriveSidebarRooms(plan);
+  const roomIdSet = new Set(entries.map((entry) => entry.id));
+  const selectedRectangle = getSelectedRectangle(plan, editorState);
+  const selectedRoomEntryId = selectedRectangle ? deriveRoomEntryIdForRectangle(selectedRectangle) : null;
+  if (selectedRoomEntryId && roomIdSet.has(selectedRoomEntryId)) {
+    return selectedRoomEntryId;
+  }
+  const selectedRoomFromSidebar = normalizeRectangleIdForUi(editorState?.roomSelection?.roomId);
+  if (selectedRoomFromSidebar && roomIdSet.has(selectedRoomFromSidebar)) {
+    return selectedRoomFromSidebar;
+  }
+  return null;
+}
+
+function getActiveRoomEntry(plan, editorState, roomEntries = null) {
+  const entries = Array.isArray(roomEntries) ? roomEntries : deriveSidebarRooms(plan);
+  const activeRoomId = deriveEffectiveActiveRoomId(plan, editorState, entries);
+  if (!activeRoomId) {
+    return null;
+  }
+  return entries.find((entry) => entry.id === activeRoomId) ?? null;
+}
+
+function normalizeRoomEntryName(name, fallbackId) {
+  if (typeof name === "string" && name.trim()) {
+    return name.trim();
+  }
+  return fallbackId;
+}
+
+function deriveRoomEntryIdForRectangle(rectangle) {
+  const roomId = normalizeRectangleIdForUi(rectangle?.roomId);
+  if (roomId) {
+    return `room:${roomId}`;
+  }
+  const rectangleId = normalizeRectangleIdForUi(rectangle?.id);
+  return rectangleId ? `rect:${rectangleId}` : "rect:unknown";
+}
+
 function isBaseboardOverlayEnabled(editorState) {
   return Boolean(editorState?.debug?.showBaseboardOverlay);
 }
 
-function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
+function drawDebugRectangles(
+  ctx,
+  plan,
+  selectedRectangleId,
+  camera,
+  mergeSelectionIds = [],
+  activeRoomId = null,
+  lockedSeamSides = null
+) {
   const metersPerWorldUnit = plan?.scale?.metersPerWorldUnit;
+  const mergeSelectionSet = new Set(
+    Array.isArray(mergeSelectionIds)
+      ? mergeSelectionIds.filter((rectangleId) => typeof rectangleId === "string" && rectangleId)
+      : []
+  );
+  const innerSeamIntervalsByRectangle = collectInternalSeamIntervalsByRectangle(plan, {
+    includeWallShell: false
+  });
+  const outerSeamIntervalsByRectangle = collectInternalSeamIntervalsByRectangle(plan, {
+    includeWallShell: true
+  });
+  const hasActiveRoom = typeof activeRoomId === "string" && activeRoomId;
+  const selectedRectangle = plan.entities.rectangles.find((rectangle) => rectangle.id === selectedRectangleId) ?? null;
+  const selectedRoomEntryId = selectedRectangle?.kind !== "wallRect"
+    ? deriveRoomEntryIdForRectangle(selectedRectangle)
+    : null;
+  const selectedGroupRectangleIds = new Set(
+    selectedRoomEntryId
+      ? plan.entities.rectangles
+        .filter((rectangle) => rectangle.kind !== "wallRect" && deriveRoomEntryIdForRectangle(rectangle) === selectedRoomEntryId)
+        .map((rectangle) => rectangle.id)
+      : []
+  );
 
   for (const rect of plan.entities.rectangles) {
     const isWall = rect.kind === "wallRect";
-    const stroke = isWall ? "#222" : "#0b6e4f";
-    const fill = isWall ? "rgba(20,20,20,0.20)" : "rgba(11,110,79,0.14)";
+    const roomEntryId = !isWall ? deriveRoomEntryIdForRectangle(rect) : null;
+    const roomStroke = roomEntryId ? roomColor(roomEntryId, 0.95) : null;
+    const roomFill = roomEntryId ? roomColor(roomEntryId, 0.18) : null;
+    const isActiveRoomMember = !isWall && hasActiveRoom && roomEntryId === activeRoomId;
+    const isNonActiveRoomMember = !isWall && hasActiveRoom && roomEntryId && roomEntryId !== activeRoomId;
+    const stroke = isWall ? "#222" : (roomStroke ?? "#0b6e4f");
+    const fill = isWall
+      ? "rgba(20,20,20,0.20)"
+      : (roomFill ?? "rgba(11,110,79,0.14)");
     const isSelected = rect.id === selectedRectangleId;
+    const isSelectedGroupMember = !isWall && selectedGroupRectangleIds.has(rect.id);
     const shell = deriveRectangleShellGeometry(rect, metersPerWorldUnit);
     const outerRect = shell?.outerRect ?? rect;
     const wallBands = shell?.wallBands ?? null;
+    const hiddenSides = !isWall && lockedSeamSides instanceof Map
+      ? lockedSeamSides.get(rect.id) ?? null
+      : null;
+    const hiddenInnerIntervalsBySide = !isWall
+      ? innerSeamIntervalsByRectangle.get(rect.id) ?? null
+      : null;
+    const hiddenOuterIntervalsBySide = !isWall
+      ? outerSeamIntervalsByRectangle.get(rect.id) ?? null
+      : null;
+    const sideVisibility = {
+      top: !(hiddenSides instanceof Set && hiddenSides.has("top")),
+      right: !(hiddenSides instanceof Set && hiddenSides.has("right")),
+      bottom: !(hiddenSides instanceof Set && hiddenSides.has("bottom")),
+      left: !(hiddenSides instanceof Set && hiddenSides.has("left"))
+    };
 
     ctx.save();
     if (wallBands && !isWall) {
@@ -2217,14 +3563,20 @@ function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
       }
       ctx.strokeStyle = "rgba(15, 42, 34, 0.45)";
       ctx.lineWidth = 1 / camera.zoom;
-      ctx.strokeRect(outerRect.x, outerRect.y, outerRect.w, outerRect.h);
+      strokeRectSides(ctx, outerRect, sideVisibility, hiddenOuterIntervalsBySide);
     }
 
     ctx.fillStyle = fill;
     ctx.strokeStyle = stroke;
-    ctx.lineWidth = isWall ? 2 : 1.5;
+    ctx.globalAlpha = isNonActiveRoomMember ? 0.62 : 1;
+    ctx.lineWidth = isWall ? 2 : (isActiveRoomMember ? 2.2 : 1.5);
     ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    if (isWall) {
+      ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    } else {
+      strokeRectSides(ctx, rect, sideVisibility, hiddenInnerIntervalsBySide);
+    }
+    ctx.globalAlpha = 1;
 
     if (rect.label) {
       ctx.fillStyle = "rgba(31,31,31,0.9)";
@@ -2233,14 +3585,198 @@ function drawDebugRectangles(ctx, plan, selectedRectangleId, camera) {
       ctx.fillText(rect.label, rect.x + 6, rect.y + 6);
     }
 
-    if (isSelected) {
-      ctx.strokeStyle = "rgba(35, 85, 235, 0.95)";
-      ctx.lineWidth = 2.5 / camera.zoom;
-      ctx.strokeRect(outerRect.x, outerRect.y, outerRect.w, outerRect.h);
+    if (isSelectedGroupMember) {
+      ctx.fillStyle = isSelected ? "rgba(35, 85, 235, 0.14)" : "rgba(35, 85, 235, 0.08)";
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+      ctx.strokeStyle = "rgba(35, 85, 235, 0.98)";
+      ctx.lineWidth = isSelected ? 3 / camera.zoom : 2.2 / camera.zoom;
+      strokeRectSides(ctx, outerRect, sideVisibility, hiddenOuterIntervalsBySide);
+    }
+
+    if (mergeSelectionSet.has(rect.id) && rect.kind !== "wallRect") {
+      ctx.strokeStyle = "rgba(138, 63, 252, 0.98)";
+      ctx.lineWidth = 2 / camera.zoom;
+      ctx.setLineDash([7 / camera.zoom, 5 / camera.zoom]);
+      strokeRectSides(ctx, outerRect, sideVisibility, hiddenOuterIntervalsBySide);
+      ctx.setLineDash([]);
     }
 
     ctx.restore();
   }
+}
+
+function strokeRectSides(ctx, rect, visibleSides = null, hiddenIntervalsBySide = null) {
+  if (!ctx || !rect) {
+    return;
+  }
+  const showTop = visibleSides == null ? true : visibleSides.top !== false;
+  const showRight = visibleSides == null ? true : visibleSides.right !== false;
+  const showBottom = visibleSides == null ? true : visibleSides.bottom !== false;
+  const showLeft = visibleSides == null ? true : visibleSides.left !== false;
+  if (!showTop && !showRight && !showBottom && !showLeft) {
+    return;
+  }
+  const topSegments = showTop
+    ? deriveVisibleSideSegments(rect.x, rect.x + rect.w, hiddenIntervalsBySide?.top)
+    : [];
+  const rightSegments = showRight
+    ? deriveVisibleSideSegments(rect.y, rect.y + rect.h, hiddenIntervalsBySide?.right)
+    : [];
+  const bottomSegments = showBottom
+    ? deriveVisibleSideSegments(rect.x, rect.x + rect.w, hiddenIntervalsBySide?.bottom)
+    : [];
+  const leftSegments = showLeft
+    ? deriveVisibleSideSegments(rect.y, rect.y + rect.h, hiddenIntervalsBySide?.left)
+    : [];
+  if (
+    topSegments.length === 0 &&
+    rightSegments.length === 0 &&
+    bottomSegments.length === 0 &&
+    leftSegments.length === 0
+  ) {
+    return;
+  }
+  ctx.beginPath();
+  for (const segment of topSegments) {
+    ctx.moveTo(segment.start, rect.y);
+    ctx.lineTo(segment.end, rect.y);
+  }
+  for (const segment of rightSegments) {
+    ctx.moveTo(rect.x + rect.w, segment.start);
+    ctx.lineTo(rect.x + rect.w, segment.end);
+  }
+  for (const segment of bottomSegments) {
+    ctx.moveTo(segment.start, rect.y + rect.h);
+    ctx.lineTo(segment.end, rect.y + rect.h);
+  }
+  for (const segment of leftSegments) {
+    ctx.moveTo(rect.x, segment.start);
+    ctx.lineTo(rect.x, segment.end);
+  }
+  ctx.stroke();
+}
+
+function collectInternalSeamIntervalsByRectangle(plan, options = {}) {
+  const rectangles = Array.isArray(plan?.entities?.rectangles) ? plan.entities.rectangles : [];
+  const includeWallShell = options.includeWallShell !== false;
+  const roomIds = new Set(
+    rectangles
+      .filter((rectangle) => rectangle?.kind !== "wallRect" && typeof rectangle?.roomId === "string" && rectangle.roomId)
+      .map((rectangle) => rectangle.roomId)
+  );
+  if (roomIds.size === 0) {
+    return new Map();
+  }
+
+  const intervalsByRectangle = new Map();
+  for (const roomId of roomIds) {
+    const roomSeams = deriveRoomSeams(plan, roomId, {
+      metersPerWorldUnit: plan.scale?.metersPerWorldUnit,
+      touchToleranceWorld: 2,
+      includeWallShell
+    });
+    for (const seam of roomSeams.seams) {
+      appendHiddenSeamInterval(intervalsByRectangle, seam.rectangleAId, seam.sideA, seam.overlapStart, seam.overlapEnd);
+      appendHiddenSeamInterval(intervalsByRectangle, seam.rectangleBId, seam.sideB, seam.overlapStart, seam.overlapEnd);
+    }
+  }
+
+  for (const [rectangleId, sideMap] of intervalsByRectangle.entries()) {
+    intervalsByRectangle.set(rectangleId, {
+      top: mergeIntervals(sideMap.top),
+      right: mergeIntervals(sideMap.right),
+      bottom: mergeIntervals(sideMap.bottom),
+      left: mergeIntervals(sideMap.left)
+    });
+  }
+  return intervalsByRectangle;
+}
+
+function appendHiddenSeamInterval(intervalsByRectangle, rectangleId, side, start, end) {
+  if (
+    !(intervalsByRectangle instanceof Map) ||
+    typeof rectangleId !== "string" ||
+    !rectangleId ||
+    (side !== "top" && side !== "right" && side !== "bottom" && side !== "left")
+  ) {
+    return;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return;
+  }
+  const intervalStart = Math.min(start, end);
+  const intervalEnd = Math.max(start, end);
+  if (intervalEnd - intervalStart <= 1e-6) {
+    return;
+  }
+  if (!intervalsByRectangle.has(rectangleId)) {
+    intervalsByRectangle.set(rectangleId, {
+      top: [],
+      right: [],
+      bottom: [],
+      left: []
+    });
+  }
+  intervalsByRectangle.get(rectangleId)[side].push({
+    start: intervalStart,
+    end: intervalEnd
+  });
+}
+
+function deriveVisibleSideSegments(sideStart, sideEnd, hiddenIntervals = null, epsilon = 1e-6) {
+  const minSide = Math.min(sideStart, sideEnd);
+  const maxSide = Math.max(sideStart, sideEnd);
+  if (maxSide - minSide <= epsilon) {
+    return [];
+  }
+  const hidden = mergeIntervals(hiddenIntervals)
+    .map((interval) => ({
+      start: Math.max(minSide, interval.start),
+      end: Math.min(maxSide, interval.end)
+    }))
+    .filter((interval) => interval.end - interval.start > epsilon);
+  if (hidden.length === 0) {
+    return [{ start: minSide, end: maxSide }];
+  }
+  const visible = [];
+  let cursor = minSide;
+  for (const interval of hidden) {
+    if (interval.start > cursor + epsilon) {
+      visible.push({ start: cursor, end: interval.start });
+    }
+    cursor = Math.max(cursor, interval.end);
+  }
+  if (maxSide > cursor + epsilon) {
+    visible.push({ start: cursor, end: maxSide });
+  }
+  return visible;
+}
+
+function mergeIntervals(intervals) {
+  const normalized = Array.isArray(intervals)
+    ? intervals
+      .filter((interval) => interval && Number.isFinite(interval.start) && Number.isFinite(interval.end))
+      .map((interval) => ({
+        start: Math.min(interval.start, interval.end),
+        end: Math.max(interval.start, interval.end)
+      }))
+      .filter((interval) => interval.end - interval.start > 1e-6)
+      .sort((left, right) => left.start - right.start)
+    : [];
+  if (normalized.length === 0) {
+    return [];
+  }
+  const merged = [normalized[0]];
+  for (let index = 1; index < normalized.length; index += 1) {
+    const current = normalized[index];
+    const tail = merged[merged.length - 1];
+    if (current.start <= tail.end + 1e-6) {
+      tail.end = Math.max(tail.end, current.end);
+      continue;
+    }
+    merged.push(current);
+  }
+  return merged;
 }
 
 function drawValidationOverlapFlash(ctx, plan, validation, camera, timestamp) {
@@ -2351,7 +3887,7 @@ function drawBaseboardDebugSegments(ctx, baseboard, camera) {
   ctx.restore();
 }
 
-function drawSelectedResizeHandles(ctx, plan, editorState) {
+function drawSelectedResizeHandles(ctx, plan, editorState, lockedSeamSides = null) {
   const selectedRectangle = getSelectedRectangle(plan, editorState);
   if (!selectedRectangle) {
     return;
@@ -2365,8 +3901,25 @@ function drawSelectedResizeHandles(ctx, plan, editorState) {
   ctx.fillStyle = "rgba(255,255,255,0.95)";
   ctx.strokeStyle = "rgba(35, 85, 235, 0.95)";
   ctx.lineWidth = 1.5 / editorState.camera.zoom;
+  const lockedSides = lockedSeamSides?.get(selectedRectangle.id) ?? null;
+  const allowInternalSlideAdjust = isInternalSeamSlideAdjustEnabled(editorState);
 
   for (const handle of handles) {
+    const isLocked = isResizeHandleBlockedByLockedSides(handle.name, lockedSides);
+    const canSlideInternalSeam = isLocked &&
+      allowInternalSlideAdjust &&
+      Boolean(deriveInternalSeamSlideStartDescriptor(plan, selectedRectangle.id, handle.name));
+
+    if (canSlideInternalSeam) {
+      ctx.fillStyle = "rgba(255, 214, 138, 0.96)";
+      ctx.strokeStyle = "rgba(163, 101, 12, 0.98)";
+    } else if (isLocked) {
+      ctx.fillStyle = "rgba(145, 145, 145, 0.95)";
+      ctx.strokeStyle = "rgba(85, 85, 85, 0.95)";
+    } else {
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.strokeStyle = "rgba(35, 85, 235, 0.95)";
+    }
     ctx.fillRect(handle.x, handle.y, handle.w, handle.h);
     ctx.strokeRect(handle.x, handle.y, handle.w, handle.h);
   }

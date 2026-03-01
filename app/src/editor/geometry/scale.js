@@ -18,6 +18,16 @@ export function computeMetersPerWorldUnit(worldLength, meters) {
   return meters / worldLength;
 }
 
+export function computeMetersPerWorldUnitFromArea(worldArea, squareMeters) {
+  if (!Number.isFinite(worldArea) || worldArea <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(squareMeters) || squareMeters <= 0) {
+    return null;
+  }
+  return Math.sqrt(squareMeters / worldArea);
+}
+
 export function buildScaleCalibration(startPoint, endPoint, meters) {
   const worldLength = distanceBetweenWorldPoints(startPoint, endPoint);
   const metersPerWorldUnit = computeMetersPerWorldUnit(worldLength, meters);

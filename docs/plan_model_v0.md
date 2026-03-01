@@ -25,6 +25,7 @@ Included now:
 - scale calibration
 - rectangles as authored primitives
 - logical room entities (even if UI comes later)
+- manual room merge semantics via shared `roomId` across touching rectangles
 - openings entity placeholder shape (to avoid repainting the schema later)
 
 Not included as persisted data:
@@ -117,6 +118,8 @@ Suggested room shape:
 Notes:
 - A room may contain multiple rectangles (L-shapes etc.).
 - `rectangleIds` is explicit so room membership can be validated.
+- Merge v1 is author-driven: selecting touching rectangles and assigning one shared room id/name/type.
+- Dissolve v1 removes the room entity and clears `roomId` from all member rectangles.
 
 ### `entities.openings`
 
@@ -163,6 +166,8 @@ Notes:
 - camera (`x`, `y`, `zoom`)
 - selection / hover
 - active tool mode
+- merge tool candidate selection (`mergeSelection.rectangleIds`)
+- merge editing options (`mergeOptions.allowInternalSeamAdjust`)
 - pointer drag/resize state
 - temporary draw drafts
 - live snap candidate previews
@@ -170,6 +175,7 @@ Notes:
 ### Derived (computed)
 - outer rectangles from `wallCm`
 - shared wall-to-wall boundaries between touching pieces
+- same-room seam intervals and locked side classification
 - snap guides and candidate links
 - room polygons / merged outlines (later)
 - wall/perimeter segments

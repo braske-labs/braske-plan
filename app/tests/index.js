@@ -7,6 +7,7 @@ import "./specs/scale.test.js";
 import "./specs/validation.test.js";
 import "./specs/wall-shell.test.js";
 import "./specs/room-wall-topology.test.js";
+import "./specs/room-merge.test.js";
 import "./specs/baseboards.test.js";
 
 const summaryElement = document.querySelector("#summary");

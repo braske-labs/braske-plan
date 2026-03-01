@@ -24,10 +24,14 @@ Stretch points: 6
 
 ## Daily notes (append-only)
 - 2026-02-28: Sprint drafted after S005 closeout correction. Planned execution order: `T-0024` → `T-0025` → `T-0026`.
+- 2026-02-28: Completed `T-0024` with explicit merge workflow (`Merge Room` tool), dissolve action, and seam-lock enforcement for full shared same-room boundaries.
+- 2026-02-28: Follow-up refinement to `T-0024`: merged-room group drag, topology-preserving edit guard, and optional internal seam sliding toggle (default locked).
+- 2026-02-28: Added room navigator sidebar + room color coding (list activation from canvas click, double-click centering, room area/baseboard details).
+- 2026-02-28: Updated sidebar to include fallback entries for unassigned roomRects so every roomRect is visible in room navigation.
 
 ## Review (append-only)
 ### Shipped
--  
+- `T-0024` multi-rectangle room composition v1 (merge tool + dissolve + seam locks).
 
 ### Missed / deferred
 -  

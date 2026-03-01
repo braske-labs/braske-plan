@@ -1,5 +1,8 @@
+import { deriveTouchingAdjacency, isConnectedSelection } from "../geometry/room-merge.js";
+
 const PLAN_VERSION = 1;
 const DEFAULT_ROOM_TYPE = "generic";
+const DEFAULT_MERGED_ROOM_NAME = "Merged Room";
 const ROOM_TYPE_SET = new Set([
   "generic",
   "living_room",
@@ -127,6 +130,23 @@ export function planReducer(plan, action) {
       });
     }
 
+    case "plan/scale/setMetersPerWorldUnit": {
+      const metersPerWorldUnit = positiveFiniteNumber(action.metersPerWorldUnit, null);
+      if (metersPerWorldUnit == null) {
+        return plan;
+      }
+      if (plan.scale?.metersPerWorldUnit === metersPerWorldUnit && plan.scale?.referenceLine == null) {
+        return plan;
+      }
+      return stampPlan({
+        ...plan,
+        scale: {
+          metersPerWorldUnit,
+          referenceLine: null
+        }
+      });
+    }
+
     case "plan/rectangles/create": {
       const nextRectangle = action.rectangle ?? createRoomRectangleEntity(action.rectangleId, action.x, action.y, action.w, action.h);
       return stampPlan({
@@ -211,6 +231,84 @@ export function planReducer(plan, action) {
         w: action.w,
         h: action.h
       };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          rectangles: nextRectangles
+        }
+      });
+    }
+
+    case "plan/rectangles/setManyGeometry": {
+      const rawUpdates = Array.isArray(action.rectangles) ? action.rectangles : [];
+      if (rawUpdates.length === 0) {
+        return plan;
+      }
+
+      const rectangleIndexById = new Map(
+        plan.entities.rectangles.map((rectangle, index) => [rectangle.id, index])
+      );
+      const normalizedUpdates = [];
+      for (const update of rawUpdates) {
+        const rectangleId = normalizeNonEmptyString(update?.id);
+        if (!rectangleId) {
+          continue;
+        }
+        const rectangleIndex = rectangleIndexById.get(rectangleId);
+        if (!Number.isInteger(rectangleIndex)) {
+          continue;
+        }
+        if (
+          !Number.isFinite(update.x) ||
+          !Number.isFinite(update.y) ||
+          !Number.isFinite(update.w) ||
+          !Number.isFinite(update.h) ||
+          update.w <= 0 ||
+          update.h <= 0
+        ) {
+          continue;
+        }
+        normalizedUpdates.push({
+          rectangleIndex,
+          rectangleId,
+          x: update.x,
+          y: update.y,
+          w: update.w,
+          h: update.h
+        });
+      }
+
+      if (normalizedUpdates.length === 0) {
+        return plan;
+      }
+
+      let changed = false;
+      const nextRectangles = plan.entities.rectangles.slice();
+      for (const update of normalizedUpdates) {
+        const current = nextRectangles[update.rectangleIndex];
+        if (
+          current.x === update.x &&
+          current.y === update.y &&
+          current.w === update.w &&
+          current.h === update.h
+        ) {
+          continue;
+        }
+        nextRectangles[update.rectangleIndex] = {
+          ...current,
+          x: update.x,
+          y: update.y,
+          w: update.w,
+          h: update.h
+        };
+        changed = true;
+      }
+
+      if (!changed) {
+        return plan;
+      }
 
       return stampPlan({
         ...plan,
@@ -389,6 +487,119 @@ export function planReducer(plan, action) {
       });
     }
 
+    case "plan/rooms/mergeRectangles": {
+      const requestedRoomName = normalizeRoomName(action.name);
+
+      const selectedRectangleIds = Array.from(
+        new Set(
+          Array.isArray(action.rectangleIds)
+            ? action.rectangleIds.filter((rectangleId) => typeof rectangleId === "string" && rectangleId)
+            : []
+        )
+      );
+      if (selectedRectangleIds.length < 2) {
+        return plan;
+      }
+
+      const rectangleById = new Map(plan.entities.rectangles.map((rectangle) => [rectangle.id, rectangle]));
+      const selectedRectangles = [];
+      for (const rectangleId of selectedRectangleIds) {
+        const rectangle = rectangleById.get(rectangleId);
+        if (!rectangle || rectangle.kind === "wallRect") {
+          return plan;
+        }
+        selectedRectangles.push(rectangle);
+      }
+
+      const adjacency = deriveTouchingAdjacency(plan.entities.rectangles, {
+        metersPerWorldUnit: plan.scale?.metersPerWorldUnit
+      });
+      if (!isConnectedSelection(selectedRectangleIds, adjacency)) {
+        return plan;
+      }
+
+      const requestedRoomTypeRaw = normalizeNonEmptyString(action.roomType);
+      const requestedRoomType = requestedRoomTypeRaw ? normalizeRoomType(requestedRoomTypeRaw) : null;
+      const selectedRectangleIdSet = new Set(selectedRectangleIds);
+      const sharedExistingRoomId = resolveSharedExistingRoomId(selectedRectangles);
+      let nextRooms = detachRectanglesFromRooms(plan.entities.rooms, selectedRectangleIdSet);
+      let targetRoom = sharedExistingRoomId
+        ? nextRooms.find((room) => room.id === sharedExistingRoomId) ?? null
+        : null;
+
+      if (!targetRoom) {
+        const generatedId = sharedExistingRoomId ?? generateRoomId(nextRooms, requestedRoomName ?? DEFAULT_MERGED_ROOM_NAME);
+        targetRoom = {
+          id: generatedId,
+          name: requestedRoomName ?? DEFAULT_MERGED_ROOM_NAME,
+          roomType: requestedRoomType ?? DEFAULT_ROOM_TYPE,
+          rectangleIds: []
+        };
+        nextRooms = [...nextRooms, targetRoom];
+      }
+      const roomName = resolveMergeRoomName(requestedRoomName, targetRoom?.name);
+
+      const nextRectangles = plan.entities.rectangles.map((rectangle) => (
+        selectedRectangleIdSet.has(rectangle.id)
+          ? { ...rectangle, roomId: targetRoom.id }
+          : rectangle
+      ));
+
+      const nextRoomsWithAssignment = nextRooms.map((room) => {
+        if (room.id !== targetRoom.id) {
+          return room;
+        }
+        const rectangleIds = Array.from(
+          new Set([...(Array.isArray(room.rectangleIds) ? room.rectangleIds : []), ...selectedRectangleIds])
+        );
+        return {
+          ...room,
+          name: roomName,
+          roomType: requestedRoomType ?? normalizeRoomType(room.roomType),
+          rectangleIds
+        };
+      });
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          rectangles: nextRectangles,
+          rooms: nextRoomsWithAssignment
+        }
+      });
+    }
+
+    case "plan/rooms/dissolveRoom": {
+      const roomId = normalizeNonEmptyString(action.roomId);
+      if (!roomId) {
+        return plan;
+      }
+
+      const room = Array.isArray(plan.entities.rooms)
+        ? plan.entities.rooms.find((candidate) => candidate?.id === roomId) ?? null
+        : null;
+      if (!room) {
+        return plan;
+      }
+
+      const nextRectangles = plan.entities.rectangles.map((rectangle) => (
+        rectangle.roomId === roomId
+          ? { ...rectangle, roomId: null }
+          : rectangle
+      ));
+      const nextRooms = plan.entities.rooms.filter((candidate) => candidate?.id !== roomId);
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          rectangles: nextRectangles,
+          rooms: nextRooms
+        }
+      });
+    }
+
     case "plan/debugSeedRectangles": {
       if (plan.entities.rectangles.length > 0 && !action.force) {
         return plan;
@@ -537,6 +748,30 @@ function detachRectangleFromRooms(rooms, rectangleId) {
   return nextRooms;
 }
 
+function detachRectanglesFromRooms(rooms, rectangleIdSet) {
+  if (!Array.isArray(rooms) || rooms.length === 0) {
+    return [];
+  }
+
+  const nextRooms = [];
+  for (const room of rooms) {
+    if (!room || typeof room !== "object") {
+      continue;
+    }
+    const rectangleIds = Array.isArray(room.rectangleIds)
+      ? room.rectangleIds.filter((roomRectangleId) => !rectangleIdSet.has(roomRectangleId))
+      : [];
+    if (rectangleIds.length === 0) {
+      continue;
+    }
+    nextRooms.push({
+      ...room,
+      rectangleIds
+    });
+  }
+  return nextRooms;
+}
+
 function generateRoomId(rooms, roomName) {
   const baseId = roomName
     .trim()
@@ -673,4 +908,35 @@ function normalizeRectangleKind(kind) {
     return kind;
   }
   return null;
+}
+
+function resolveSharedExistingRoomId(rectangles) {
+  if (!Array.isArray(rectangles) || rectangles.length === 0) {
+    return null;
+  }
+
+  const firstRoomId = normalizeNonEmptyString(rectangles[0]?.roomId);
+  if (!firstRoomId) {
+    return null;
+  }
+
+  for (let index = 1; index < rectangles.length; index += 1) {
+    const roomId = normalizeNonEmptyString(rectangles[index]?.roomId);
+    if (roomId !== firstRoomId) {
+      return null;
+    }
+  }
+  return firstRoomId;
+}
+
+function resolveMergeRoomName(requestedRoomName, existingRoomName) {
+  const normalizedRequested = normalizeRoomName(requestedRoomName);
+  if (normalizedRequested) {
+    return normalizedRequested;
+  }
+  const normalizedExisting = normalizeRoomName(existingRoomName);
+  if (normalizedExisting) {
+    return normalizedExisting;
+  }
+  return DEFAULT_MERGED_ROOM_NAME;
 }

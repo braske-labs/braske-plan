@@ -1,5 +1,6 @@
 import {
   buildScaleCalibration,
+  computeMetersPerWorldUnitFromArea,
   computeMetersPerWorldUnit,
   distanceBetweenWorldPoints,
   formatMetersAndCentimeters,
@@ -16,6 +17,12 @@ test("computeMetersPerWorldUnit rejects invalid inputs", () => {
   assertEqual(computeMetersPerWorldUnit(0, 2), null);
   assertEqual(computeMetersPerWorldUnit(10, 0), null);
   assertEqual(computeMetersPerWorldUnit(-10, 2), null);
+});
+
+test("computeMetersPerWorldUnitFromArea converts area ratio to linear scale", () => {
+  assertClose(computeMetersPerWorldUnitFromArea(100, 4), 0.2);
+  assertEqual(computeMetersPerWorldUnitFromArea(0, 4), null);
+  assertEqual(computeMetersPerWorldUnitFromArea(100, 0), null);
 });
 
 test("buildScaleCalibration returns reference line and meters-per-unit", () => {

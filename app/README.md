@@ -188,7 +188,7 @@ This harness is dependency-free and runs in the browser because local Node is cu
 ## T-0009 manual smoke check (scale calibration: reference line -> meters)
 
 1. Start the server and open `http://127.0.0.1:4173`.
-2. Confirm the sidebar says `T-0009` and the toolbar shows `Calibrate Scale`.
+2. Confirm the toolbar shows both `Calibrate Scale` and `Calibrate by Area`.
 3. Click `Calibrate Scale`, then drag a visible reference line on the canvas:
    - a dashed orange draft line appears during drag
    - line length in world units is shown near the draft line
@@ -210,6 +210,13 @@ This harness is dependency-free and runs in the browser because local Node is cu
    - snapping
    - delete rectangle
 
+### Area-based scale calibration quick check
+
+1. Ensure at least one room is active (click a room in the left sidebar).
+2. Confirm `Calibrate by Area` is enabled.
+3. Click `Calibrate by Area` and enter known room area in m².
+4. Confirm scale status updates and room/rectangle metric readouts follow the new calibration.
+
 ## T-0014 manual smoke check (selected rectangle dimensions: world + meters/cm)
 
 1. Start the server and open `http://127.0.0.1:4173`.
@@ -218,17 +225,38 @@ This harness is dependency-free and runs in the browser because local Node is cu
 4. Confirm selected dimensions appear in:
    - the top-left debug overlay (`Sel world`, `Sel metric`)
    - the status line (compact selected dimensions)
-   - the main HTML overlay text (`Selected dimensions: ...`)
-5. Before scale calibration (if not set yet):
-   - world units should still show
-   - metric readout should show a safe fallback message (not crash/NaN)
-6. Calibrate scale (use `Calibrate Scale`), then reselect/drag/resize a rectangle:
-   - metric readout shows meters/cm
-   - values update live during drag and resize
-7. Clear selection:
-   - readouts show a safe `none` state
-8. Reload the page after autosave:
-   - dimensions still render correctly after reopening (with saved scale if previously calibrated)
+
+## T-0024 manual smoke check (merge room workflow + seam locks)
+
+1. Start the server and open `http://127.0.0.1:4173`.
+2. Check left `Rooms` panel:
+   - each room appears with its own color chip
+   - sidebar header shows total area + total baseboard across all room entries
+   - merged room members share the same color on canvas
+   - unassigned rectangles still appear (using rectangle id fallback)
+   - click room item to activate/select it; double-click to center view
+3. Draw two touching `roomRect` rectangles (or use existing touching room rectangles).
+4. (Optional) set a room name/type in `Room Tag`, click `Merge Room`, then click both rectangles:
+   - both rectangles show merge-candidate outlines
+   - room panel status shows connected/ready once selection is valid
+5. Click `Complete Merge`:
+   - tool returns to `Navigate`
+   - both rectangles share one room assignment
+   - merge works even if name is blank (fallback name `Merged Room`)
+6. Try dragging one merged rectangle body:
+   - all member rectangles move together as one glued room
+7. Try resizing a locked seam side handle:
+   - by default it is blocked (gray handle style)
+8. Toggle `Internal Slides: On` and drag a locked side handle (`N/E/S/W`):
+   - the internal seam slides
+   - both touching rectangles resize together while staying glued
+9. Select any member rectangle and click `Dissolve Room`:
+   - room assignment clears from all members
+   - room entity is removed
+10. With a room active, verify left details show:
+   - area (sum of room member interior rectangles)
+   - baseboard total for that room
+   - active room color matches canvas room tint
 
 ## T-0015 manual smoke check (on-canvas selected-rectangle dimension labels)
 

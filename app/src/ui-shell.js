@@ -17,6 +17,8 @@ export function createEditorShell(root) {
   const toolNavigateButton = root.querySelector("[data-editor-action='tool-navigate']");
   const toolDrawRectButton = root.querySelector("[data-editor-action='tool-draw-rect']");
   const toolCalibrateScaleButton = root.querySelector("[data-editor-action='tool-calibrate-scale']");
+  const calibrateScaleByAreaButton = root.querySelector("[data-editor-action='scale-calibrate-area']");
+  const toolMergeRoomButton = root.querySelector("[data-editor-action='tool-merge-room']");
   const deleteSelectedButton = root.querySelector("[data-editor-action='rect-delete']");
   const rectangleKindToggleButton = root.querySelector("[data-editor-action='rect-toggle-kind']");
   const wallStatusElement = root.querySelector("[data-wall-status]");
@@ -37,6 +39,11 @@ export function createEditorShell(root) {
   const roomTypeSelect = root.querySelector("[data-room-input='type']");
   const roomAssignButton = root.querySelector("[data-editor-action='room-assign']");
   const roomClearButton = root.querySelector("[data-editor-action='room-clear']");
+  const mergeStatusElement = root.querySelector("[data-merge-status]");
+  const roomMergeCompleteButton = root.querySelector("[data-editor-action='room-merge-complete']");
+  const roomMergeCancelButton = root.querySelector("[data-editor-action='room-merge-cancel']");
+  const roomDissolveButton = root.querySelector("[data-editor-action='room-dissolve']");
+  const roomInternalSlideToggleButton = root.querySelector("[data-editor-action='room-internal-slide-toggle']");
   const exportJsonButton = root.querySelector("[data-editor-action='plan-export-json']");
   const importJsonButton = root.querySelector("[data-editor-action='plan-import-json']");
   const importJsonFileInput = root.querySelector("[data-editor-file-input='plan-import']");
@@ -51,6 +58,10 @@ export function createEditorShell(root) {
   const backgroundScaleUpButton = root.querySelector("[data-editor-action='bg-scale-up']");
   const backgroundStatusElement = root.querySelector("[data-background-status]");
   const scaleStatusElement = root.querySelector("[data-scale-status]");
+  const roomListElement = root.querySelector("[data-room-list]");
+  const roomSummaryElement = root.querySelector("[data-room-summary]");
+  const roomTotalsElement = root.querySelector("[data-room-totals]");
+  const roomDetailsElement = root.querySelector("[data-room-details]");
 
   if (!canvas || !shellElement) return;
 
@@ -66,6 +77,8 @@ export function createEditorShell(root) {
       toolNavigateButton,
       toolDrawRectButton,
       toolCalibrateScaleButton,
+      calibrateScaleByAreaButton,
+      toolMergeRoomButton,
       deleteSelectedButton,
       rectangleKindToggleButton,
       wallStatusElement,
@@ -86,6 +99,11 @@ export function createEditorShell(root) {
       roomTypeSelect,
       roomAssignButton,
       roomClearButton,
+      mergeStatusElement,
+      roomMergeCompleteButton,
+      roomMergeCancelButton,
+      roomDissolveButton,
+      roomInternalSlideToggleButton,
       exportJsonButton,
       importJsonButton,
       importJsonFileInput,
@@ -99,7 +117,11 @@ export function createEditorShell(root) {
       backgroundScaleDownButton,
       backgroundScaleUpButton,
       backgroundStatusElement,
-      scaleStatusElement
+      scaleStatusElement,
+      roomListElement,
+      roomSummaryElement,
+      roomTotalsElement,
+      roomDetailsElement
     }
   });
 }
@@ -109,34 +131,26 @@ function buildShell() {
   wrapper.className = "shell";
 
   wrapper.innerHTML = `
-    <aside class="panel sidebar" aria-label="Project info">
-      <div>
-        <h1>Apartment Planner MVP</h1>
+    <aside class="panel sidebar rooms-sidebar" aria-label="Rooms">
+      <div class="rooms-sidebar-header">
+        <h1>Rooms</h1>
+        <p data-room-summary>No rooms yet.</p>
+        <p class="rooms-totals" data-room-totals>Total: area 0.0 wu² • baseboard 0.0 wu</p>
       </div>
-      <p>
-        T-0019 starts baseboard candidate identification so counted segments can be debugged visually.
-      </p>
-      <div class="meta-row" aria-label="Sprint metadata">
-        <div class="pill">
-          <strong>Current Sprint</strong>
-          S005
-        </div>
-        <div class="pill">
-          <strong>Ticket</strong>
-          T-0019
-        </div>
+      <div class="rooms-list" data-room-list>
+        <div class="rooms-empty">Create or merge room rectangles to populate this list.</div>
       </div>
-      <ol class="checklist" aria-label="Immediate next steps">
-        <li>This ticket: derive first-pass baseboard candidate segments from room/wall geometry.</li>
-        <li>Show candidates with fat red debug lines using an on/off toggle.</li>
-        <li>Next: add enclosure/coverage checks and refine candidate filtering.</li>
-      </ol>
+      <div class="rooms-details" data-room-details>
+        Select a room to view its area and baseboard totals.
+      </div>
     </aside>
     <section class="panel editor-frame" aria-label="Editor">
       <div class="toolbar" role="toolbar" aria-label="Editor toolbar">
         <button type="button" data-editor-action="tool-navigate" aria-pressed="true">Navigate</button>
         <button type="button" data-editor-action="tool-draw-rect" aria-pressed="false">Draw Rect</button>
         <button type="button" data-editor-action="tool-calibrate-scale" aria-pressed="false">Calibrate Scale</button>
+        <button type="button" data-editor-action="scale-calibrate-area" disabled>Calibrate by Area</button>
+        <button type="button" data-editor-action="tool-merge-room" aria-pressed="false">Merge Room</button>
         <button type="button" data-editor-action="rect-delete" disabled>Delete Rect</button>
         <button type="button" data-editor-action="rect-toggle-kind" aria-pressed="false" disabled>Set As Wall</button>
         <details class="toolbar-disclosure wall-controls">
@@ -199,6 +213,18 @@ function buildShell() {
             </label>
             <button type="button" data-editor-action="room-assign">Save Room Tag</button>
             <button type="button" data-editor-action="room-clear">Clear Room Tag</button>
+          </div>
+        </details>
+        <details class="toolbar-disclosure merge-controls">
+          <summary>
+            <span class="toolbar-disclosure-title">Merge Room</span>
+            <span class="toolbar-inline-status" data-merge-status>Select at least 2 touching room rects</span>
+          </summary>
+          <div class="toolbar-disclosure-panel merge-controls-panel">
+            <button type="button" data-editor-action="room-merge-complete" disabled>Complete Merge</button>
+            <button type="button" data-editor-action="room-merge-cancel" disabled>Cancel Merge</button>
+            <button type="button" data-editor-action="room-dissolve" disabled>Dissolve Room</button>
+            <button type="button" data-editor-action="room-internal-slide-toggle" aria-pressed="false">Internal Slides: Off</button>
           </div>
         </details>
         <button type="button" data-editor-action="plan-export-json">Export JSON</button>

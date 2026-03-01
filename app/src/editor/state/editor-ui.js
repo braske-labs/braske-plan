@@ -10,7 +10,7 @@ const DEFAULT_CAMERA = {
 
 export function createInitialEditorState() {
   return {
-    tool: "navigate", // "navigate" | "drawRect" | "calibrateScale"
+    tool: "navigate", // "navigate" | "drawRect" | "calibrateScale" | "mergeRoom"
     viewport: {
       cssWidth: 1,
       cssHeight: 1,
@@ -19,6 +19,15 @@ export function createInitialEditorState() {
     camera: { ...DEFAULT_CAMERA },
     selection: {
       rectangleId: null
+    },
+    roomSelection: {
+      roomId: null
+    },
+    mergeSelection: {
+      rectangleIds: []
+    },
+    mergeOptions: {
+      allowInternalSeamAdjust: false
     },
     debug: {
       showBaseboardOverlay: false
@@ -37,13 +46,67 @@ export function createInitialEditorState() {
 
 export function editorUiReducer(state, action) {
   switch (action.type) {
-    case "editor/tool/set":
-      if (state.tool === action.tool) {
+    case "editor/tool/set": {
+      const nextTool = normalizeEditorTool(action.tool);
+      if (!nextTool || state.tool === nextTool) {
         return state;
       }
       return {
         ...state,
-        tool: action.tool
+        tool: nextTool,
+        mergeSelection: nextTool === "mergeRoom"
+          ? state.mergeSelection
+          : { rectangleIds: [] }
+      };
+    }
+
+    case "editor/merge/toggleRectangle": {
+      const rectangleId = normalizeRectangleId(action.rectangleId);
+      if (!rectangleId) {
+        return state;
+      }
+
+      const currentIds = Array.isArray(state.mergeSelection?.rectangleIds)
+        ? state.mergeSelection.rectangleIds
+        : [];
+      const hasRectangle = currentIds.includes(rectangleId);
+      const nextRectangleIds = hasRectangle
+        ? currentIds.filter((candidateId) => candidateId !== rectangleId)
+        : [...currentIds, rectangleId];
+
+      if (
+        nextRectangleIds.length === currentIds.length &&
+        nextRectangleIds.every((candidateId, index) => candidateId === currentIds[index])
+      ) {
+        return state;
+      }
+
+      return {
+        ...state,
+        mergeSelection: {
+          rectangleIds: nextRectangleIds
+        }
+      };
+    }
+
+    case "editor/merge/clear":
+      if (!Array.isArray(state.mergeSelection?.rectangleIds) || state.mergeSelection.rectangleIds.length === 0) {
+        return state;
+      }
+      return {
+        ...state,
+        mergeSelection: {
+          rectangleIds: []
+        }
+      };
+
+    case "editor/merge/toggleInternalAdjust":
+      return {
+        ...state,
+        mergeOptions: {
+          ...state.mergeOptions,
+          allowInternalSeamAdjust: !Boolean(state.mergeOptions?.allowInternalSeamAdjust)
+        }
       };
 
     case "editor/selection/set":
@@ -54,6 +117,30 @@ export function editorUiReducer(state, action) {
         ...state,
         selection: {
           rectangleId: action.rectangleId
+        }
+      };
+
+    case "editor/roomSelection/set": {
+      const roomId = normalizeRoomId(action.roomId);
+      if (state.roomSelection.roomId === roomId) {
+        return state;
+      }
+      return {
+        ...state,
+        roomSelection: {
+          roomId
+        }
+      };
+    }
+
+    case "editor/roomSelection/clear":
+      if (state.roomSelection.roomId == null) {
+        return state;
+      }
+      return {
+        ...state,
+        roomSelection: {
+          roomId: null
         }
       };
 
@@ -106,6 +193,31 @@ export function editorUiReducer(state, action) {
         ...state,
         camera: { ...DEFAULT_CAMERA }
       };
+
+    case "editor/camera/setPose": {
+      const nextX = Number.isFinite(action.x) ? action.x : state.camera.x;
+      const nextY = Number.isFinite(action.y) ? action.y : state.camera.y;
+      const nextZoomRaw = Number.isFinite(action.zoom) ? action.zoom : state.camera.zoom;
+      const minZoom = state.camera.minZoom ?? DEFAULT_CAMERA.minZoom;
+      const maxZoom = state.camera.maxZoom ?? DEFAULT_CAMERA.maxZoom;
+      const nextZoom = Math.min(maxZoom, Math.max(minZoom, nextZoomRaw));
+      if (
+        nextX === state.camera.x &&
+        nextY === state.camera.y &&
+        nextZoom === state.camera.zoom
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        camera: {
+          ...state.camera,
+          x: nextX,
+          y: nextY,
+          zoom: nextZoom
+        }
+      };
+    }
 
     case "editor/camera/panByScreenDelta":
       return {
@@ -236,6 +348,7 @@ export function editorUiReducer(state, action) {
           resizeRectangle: {
             rectangleId: action.rectangleId,
             handleName: action.handleName,
+            seamSlide: action.seamSlide ?? null,
             snapshot: {
               x: action.rectX,
               y: action.rectY,
@@ -319,4 +432,32 @@ export function editorUiReducer(state, action) {
     default:
       return state;
   }
+}
+
+function normalizeEditorTool(tool) {
+  if (
+    tool === "navigate" ||
+    tool === "drawRect" ||
+    tool === "calibrateScale" ||
+    tool === "mergeRoom"
+  ) {
+    return tool;
+  }
+  return null;
+}
+
+function normalizeRectangleId(rectangleId) {
+  if (typeof rectangleId !== "string") {
+    return null;
+  }
+  const trimmed = rectangleId.trim();
+  return trimmed || null;
+}
+
+function normalizeRoomId(roomId) {
+  if (typeof roomId !== "string") {
+    return null;
+  }
+  const trimmed = roomId.trim();
+  return trimmed || null;
 }
