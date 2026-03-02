@@ -3,6 +3,7 @@ import { deriveTouchingAdjacency, isConnectedSelection } from "../geometry/room-
 const PLAN_VERSION = 1;
 const DEFAULT_ROOM_TYPE = "generic";
 const DEFAULT_MERGED_ROOM_NAME = "Merged Room";
+const DEFAULT_WALL_HEIGHT_METERS = 2.7;
 const ROOM_TYPE_SET = new Set([
   "generic",
   "living_room",
@@ -36,6 +37,9 @@ export function createEmptyPlan() {
     scale: {
       metersPerWorldUnit: null,
       referenceLine: null
+    },
+    settings: {
+      wallHeightMeters: DEFAULT_WALL_HEIGHT_METERS
     },
     entities: {
       rectangles: [],
@@ -151,6 +155,24 @@ export function planReducer(plan, action) {
       });
     }
 
+    case "plan/settings/setWallHeightMeters": {
+      const wallHeightMeters = positiveFiniteNumber(action.wallHeightMeters, null);
+      if (wallHeightMeters == null) {
+        return plan;
+      }
+      const previousWallHeight = positiveFiniteNumber(plan?.settings?.wallHeightMeters, DEFAULT_WALL_HEIGHT_METERS);
+      if (previousWallHeight === wallHeightMeters) {
+        return plan;
+      }
+      return stampPlan({
+        ...plan,
+        settings: {
+          ...(plan.settings ?? {}),
+          wallHeightMeters
+        }
+      });
+    }
+
     case "plan/rectangles/create": {
       const nextRectangle = action.rectangle ?? createRoomRectangleEntity(action.rectangleId, action.x, action.y, action.w, action.h);
       return stampPlan({
@@ -203,6 +225,11 @@ export function planReducer(plan, action) {
         x: action.x,
         y: action.y
       };
+      const nextOpenings = applyOpeningGeometryAfterRectanglesChanged(
+        plan.entities.openings,
+        plan.entities.rectangles,
+        nextRectangles
+      );
       const nextLighting = applyLightingFixtureGeometryAfterRectanglesChanged(
         plan.entities.lighting,
         plan.entities.rectangles,
@@ -214,6 +241,7 @@ export function planReducer(plan, action) {
         entities: {
           ...plan.entities,
           rectangles: nextRectangles,
+          openings: nextOpenings,
           lighting: nextLighting
         }
       });
@@ -243,6 +271,11 @@ export function planReducer(plan, action) {
         w: action.w,
         h: action.h
       };
+      const nextOpenings = applyOpeningGeometryAfterRectanglesChanged(
+        plan.entities.openings,
+        plan.entities.rectangles,
+        nextRectangles
+      );
       const nextLighting = applyLightingFixtureGeometryAfterRectanglesChanged(
         plan.entities.lighting,
         plan.entities.rectangles,
@@ -254,6 +287,7 @@ export function planReducer(plan, action) {
         entities: {
           ...plan.entities,
           rectangles: nextRectangles,
+          openings: nextOpenings,
           lighting: nextLighting
         }
       });
@@ -327,6 +361,11 @@ export function planReducer(plan, action) {
       if (!changed) {
         return plan;
       }
+      const nextOpenings = applyOpeningGeometryAfterRectanglesChanged(
+        plan.entities.openings,
+        plan.entities.rectangles,
+        nextRectangles
+      );
       const nextLighting = applyLightingFixtureGeometryAfterRectanglesChanged(
         plan.entities.lighting,
         plan.entities.rectangles,
@@ -338,6 +377,7 @@ export function planReducer(plan, action) {
         entities: {
           ...plan.entities,
           rectangles: nextRectangles,
+          openings: nextOpenings,
           lighting: nextLighting
         }
       });
@@ -622,6 +662,173 @@ export function planReducer(plan, action) {
           rectangles: nextRectangles,
           rooms: nextRooms,
           lighting: nextLighting
+        }
+      });
+    }
+
+    case "plan/openings/add": {
+      const openingId = normalizeNonEmptyString(action.openingId);
+      const kind = normalizeOpeningKind(action.kind);
+      const host = normalizeOpeningHost(action.host);
+      const widthWorld = positiveFiniteNumber(action.widthWorld, null);
+      if (!openingId || !kind || !host || widthWorld == null) {
+        return plan;
+      }
+
+      const openings = ensureOpeningCollection(plan.entities.openings);
+      if (openings.some((opening) => opening?.id === openingId)) {
+        return plan;
+      }
+
+      const rectangle = plan.entities.rectangles.find((candidate) => candidate?.id === host.rectangleId) ?? null;
+      if (!rectangle || !isOpeningHostWallCapable(rectangle, host.side)) {
+        return plan;
+      }
+
+      const placement = projectOpeningGeometryFromHost(rectangle, host, widthWorld);
+      if (!placement) {
+        return plan;
+      }
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          openings: [
+            ...openings,
+            {
+              id: openingId,
+              kind,
+              host: placement.host,
+              widthWorld: placement.widthWorld,
+              x: placement.x,
+              y: placement.y
+            }
+          ]
+        }
+      });
+    }
+
+    case "plan/openings/move": {
+      const openingId = normalizeNonEmptyString(action.openingId);
+      const host = normalizeOpeningHost(action.host);
+      if (!openingId || !host) {
+        return plan;
+      }
+
+      const openings = ensureOpeningCollection(plan.entities.openings);
+      const openingIndex = openings.findIndex((opening) => opening?.id === openingId);
+      if (openingIndex < 0) {
+        return plan;
+      }
+
+      const current = openings[openingIndex];
+      const rectangle = plan.entities.rectangles.find((candidate) => candidate?.id === host.rectangleId) ?? null;
+      if (!rectangle || !isOpeningHostWallCapable(rectangle, host.side)) {
+        return plan;
+      }
+      const placement = projectOpeningGeometryFromHost(rectangle, host, current.widthWorld);
+      if (!placement) {
+        return plan;
+      }
+
+      if (
+        current.x === placement.x &&
+        current.y === placement.y &&
+        current.widthWorld === placement.widthWorld &&
+        areOpeningHostsEqual(current.host, placement.host)
+      ) {
+        return plan;
+      }
+
+      const nextOpenings = openings.slice();
+      nextOpenings[openingIndex] = {
+        ...current,
+        host: placement.host,
+        widthWorld: placement.widthWorld,
+        x: placement.x,
+        y: placement.y
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          openings: nextOpenings
+        }
+      });
+    }
+
+    case "plan/openings/resize": {
+      const openingId = normalizeNonEmptyString(action.openingId);
+      const widthWorld = positiveFiniteNumber(action.widthWorld, null);
+      if (!openingId || widthWorld == null) {
+        return plan;
+      }
+
+      const openings = ensureOpeningCollection(plan.entities.openings);
+      const openingIndex = openings.findIndex((opening) => opening?.id === openingId);
+      if (openingIndex < 0) {
+        return plan;
+      }
+
+      const current = openings[openingIndex];
+      const host = normalizeOpeningHost(current.host);
+      if (!host) {
+        return plan;
+      }
+      const rectangle = plan.entities.rectangles.find((candidate) => candidate?.id === host.rectangleId) ?? null;
+      if (!rectangle || !isOpeningHostWallCapable(rectangle, host.side)) {
+        return plan;
+      }
+      const placement = projectOpeningGeometryFromHost(rectangle, host, widthWorld);
+      if (!placement) {
+        return plan;
+      }
+
+      if (
+        current.x === placement.x &&
+        current.y === placement.y &&
+        current.widthWorld === placement.widthWorld &&
+        areOpeningHostsEqual(current.host, placement.host)
+      ) {
+        return plan;
+      }
+
+      const nextOpenings = openings.slice();
+      nextOpenings[openingIndex] = {
+        ...current,
+        host: placement.host,
+        widthWorld: placement.widthWorld,
+        x: placement.x,
+        y: placement.y
+      };
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          openings: nextOpenings
+        }
+      });
+    }
+
+    case "plan/openings/delete": {
+      const openingId = normalizeNonEmptyString(action.openingId);
+      if (!openingId) {
+        return plan;
+      }
+      const openings = ensureOpeningCollection(plan.entities.openings);
+      const nextOpenings = openings.filter((opening) => opening?.id !== openingId);
+      if (nextOpenings.length === openings.length) {
+        return plan;
+      }
+
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          openings: nextOpenings
         }
       });
     }
@@ -1043,6 +1250,73 @@ function cleanupOpeningsAfterRectangleDelete(openings, deletedRectangleId) {
   });
 }
 
+function ensureOpeningCollection(rawOpenings) {
+  if (!Array.isArray(rawOpenings)) {
+    return [];
+  }
+  return rawOpenings.filter((opening) => opening && typeof opening === "object");
+}
+
+function applyOpeningGeometryAfterRectanglesChanged(rawOpenings, previousRectangles, nextRectangles) {
+  const openings = ensureOpeningCollection(rawOpenings);
+  if (openings.length === 0) {
+    return openings;
+  }
+
+  const previousById = new Map(
+    Array.isArray(previousRectangles)
+      ? previousRectangles
+        .filter((rectangle) => rectangle && typeof rectangle.id === "string" && rectangle.id)
+        .map((rectangle) => [rectangle.id, rectangle])
+      : []
+  );
+  const nextById = new Map(
+    Array.isArray(nextRectangles)
+      ? nextRectangles
+        .filter((rectangle) => rectangle && typeof rectangle.id === "string" && rectangle.id)
+        .map((rectangle) => [rectangle.id, rectangle])
+      : []
+  );
+
+  let changed = false;
+  const nextOpenings = openings.map((opening) => {
+    const host = normalizeOpeningHost(opening?.host);
+    if (!host) {
+      return opening;
+    }
+    const previousRectangle = previousById.get(host.rectangleId);
+    const nextRectangle = nextById.get(host.rectangleId);
+    if (!previousRectangle || !nextRectangle || !hasRectangleGeometryChanged(previousRectangle, nextRectangle)) {
+      return opening;
+    }
+    if (!isOpeningHostWallCapable(nextRectangle, host.side)) {
+      return opening;
+    }
+    const placement = projectOpeningGeometryFromHost(nextRectangle, host, opening.widthWorld);
+    if (!placement) {
+      return opening;
+    }
+    if (
+      opening.x === placement.x &&
+      opening.y === placement.y &&
+      opening.widthWorld === placement.widthWorld &&
+      areOpeningHostsEqual(opening.host, placement.host)
+    ) {
+      return opening;
+    }
+    changed = true;
+    return {
+      ...opening,
+      host: placement.host,
+      widthWorld: placement.widthWorld,
+      x: placement.x,
+      y: placement.y
+    };
+  });
+
+  return changed ? nextOpenings : openings;
+}
+
 function applyLightingFixtureGeometryAfterRectanglesChanged(rawLighting, previousRectangles, nextRectangles) {
   const lighting = ensureLightingCollections(rawLighting);
   if (lighting.fixtures.length === 0) {
@@ -1286,6 +1560,116 @@ function normalizeLightingFixtureKind(kind) {
     return kind;
   }
   return null;
+}
+
+function normalizeOpeningKind(kind) {
+  return kind === "door" || kind === "window" ? kind : null;
+}
+
+function normalizeOpeningHost(host) {
+  const rawHost = host && typeof host === "object" ? host : null;
+  if (!rawHost || rawHost.type !== "wallSide") {
+    return null;
+  }
+  const rectangleId = normalizeNonEmptyString(rawHost.rectangleId);
+  const side = normalizeWallSide(rawHost.side ?? rawHost.edge);
+  const offset = clampNumber(rawHost.offset, 0, 1, null);
+  if (!rectangleId || !side || offset == null) {
+    return null;
+  }
+  return {
+    type: "wallSide",
+    rectangleId,
+    side,
+    offset
+  };
+}
+
+function areOpeningHostsEqual(a, b) {
+  const left = normalizeOpeningHost(a);
+  const right = normalizeOpeningHost(b);
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.rectangleId === right.rectangleId &&
+    left.side === right.side &&
+    left.offset === right.offset
+  );
+}
+
+function isOpeningHostWallCapable(rectangle, side) {
+  if (!rectangle || (side !== "top" && side !== "right" && side !== "bottom" && side !== "left")) {
+    return false;
+  }
+  if (rectangle.kind === "wallRect") {
+    return true;
+  }
+  const wallCm = normalizeWallCm(rectangle.wallCm);
+  return wallCm[side] > 0;
+}
+
+function projectOpeningGeometryFromHost(rectangle, host, rawWidthWorld) {
+  if (
+    !rectangle ||
+    !Number.isFinite(rectangle.x) ||
+    !Number.isFinite(rectangle.y) ||
+    !Number.isFinite(rectangle.w) ||
+    !Number.isFinite(rectangle.h) ||
+    rectangle.w <= 0 ||
+    rectangle.h <= 0
+  ) {
+    return null;
+  }
+  const normalizedHost = normalizeOpeningHost(host);
+  if (!normalizedHost) {
+    return null;
+  }
+
+  const alongLength = (normalizedHost.side === "top" || normalizedHost.side === "bottom")
+    ? rectangle.w
+    : rectangle.h;
+  if (!Number.isFinite(alongLength) || alongLength <= 0) {
+    return null;
+  }
+
+  const minWidthWorld = Math.max(1, Math.min(40, alongLength));
+  const widthWorld = clampNumber(rawWidthWorld, minWidthWorld, alongLength, null);
+  if (widthWorld == null) {
+    return null;
+  }
+  const halfWidth = widthWorld / 2;
+  const centerAlong = clampNumber(
+    normalizedHost.offset * alongLength,
+    halfWidth,
+    alongLength - halfWidth,
+    alongLength / 2
+  );
+  const offset = alongLength > 0 ? centerAlong / alongLength : 0.5;
+
+  let x = rectangle.x;
+  let y = rectangle.y;
+  if (normalizedHost.side === "top" || normalizedHost.side === "bottom") {
+    x = rectangle.x + centerAlong;
+    y = normalizedHost.side === "top"
+      ? rectangle.y
+      : rectangle.y + rectangle.h;
+  } else {
+    x = normalizedHost.side === "left"
+      ? rectangle.x
+      : rectangle.x + rectangle.w;
+    y = rectangle.y + centerAlong;
+  }
+
+  return {
+    host: {
+      ...normalizedHost,
+      offset
+    },
+    x,
+    y,
+    widthWorld
+  };
 }
 
 function normalizeLightingFixtureSubtype(subtype, fixtureKind) {

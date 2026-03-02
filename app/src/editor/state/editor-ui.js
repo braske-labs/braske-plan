@@ -10,7 +10,7 @@ const DEFAULT_CAMERA = {
 
 export function createInitialEditorState() {
   return {
-    tool: "navigate", // "navigate" | "drawRect" | "calibrateScale" | "mergeRoom" | "placeSwitch" | "placeLamp" | "linkLighting"
+    tool: "navigate", // "navigate" | "drawRect" | "calibrateScale" | "mergeRoom" | "placeSwitch" | "placeLamp" | "linkLighting" | "placeDoor" | "placeWindow"
     viewport: {
       cssWidth: 1,
       cssHeight: 1,
@@ -26,6 +26,9 @@ export function createInitialEditorState() {
     lightingSelection: {
       fixtureId: null,
       linkSwitchId: null
+    },
+    openingSelection: {
+      openingId: null
     },
     lightingPreview: {
       switchStatesById: {}
@@ -48,8 +51,10 @@ export function createInitialEditorState() {
       lastScreen: null,
       dragRectangle: null,
       dragFixture: null,
+      dragOpening: null,
       drawRectDraft: null,
       resizeRectangle: null,
+      resizeOpening: null,
       calibrationDraft: null
     }
   };
@@ -193,6 +198,30 @@ export function editorUiReducer(state, action) {
         lightingSelection: {
           ...state.lightingSelection,
           fixtureId: null
+        }
+      };
+
+    case "editor/openingSelection/set": {
+      const openingId = normalizeOpeningId(action.openingId);
+      if (state.openingSelection.openingId === openingId) {
+        return state;
+      }
+      return {
+        ...state,
+        openingSelection: {
+          openingId
+        }
+      };
+    }
+
+    case "editor/openingSelection/clear":
+      if (state.openingSelection.openingId == null) {
+        return state;
+      }
+      return {
+        ...state,
+        openingSelection: {
+          openingId: null
         }
       };
 
@@ -355,8 +384,10 @@ export function editorUiReducer(state, action) {
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
           dragFixture: null,
+          dragOpening: null,
           drawRectDraft: null,
           resizeRectangle: null,
+          resizeOpening: null,
           calibrationDraft: null
         }
       };
@@ -389,8 +420,10 @@ export function editorUiReducer(state, action) {
             offsetY: action.offsetY
           },
           dragFixture: null,
+          dragOpening: null,
           drawRectDraft: null,
           resizeRectangle: null,
+          resizeOpening: null,
           calibrationDraft: null
         }
       };
@@ -423,8 +456,30 @@ export function editorUiReducer(state, action) {
             offsetX: action.offsetX,
             offsetY: action.offsetY
           },
+          dragOpening: null,
           drawRectDraft: null,
           resizeRectangle: null,
+          resizeOpening: null,
+          calibrationDraft: null
+        }
+      };
+
+    case "editor/interaction/openingDragStart":
+      return {
+        ...state,
+        interaction: {
+          mode: "draggingOpening",
+          pointerId: action.pointerId,
+          lastScreen: { x: action.screenX, y: action.screenY },
+          dragRectangle: null,
+          dragFixture: null,
+          dragOpening: {
+            openingId: action.openingId,
+            offsetAlong: action.offsetAlong
+          },
+          drawRectDraft: null,
+          resizeRectangle: null,
+          resizeOpening: null,
           calibrationDraft: null
         }
       };
@@ -432,6 +487,21 @@ export function editorUiReducer(state, action) {
     case "editor/interaction/fixtureDragMove":
       if (
         state.interaction.mode !== "draggingFixture" ||
+        state.interaction.pointerId !== action.pointerId
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        interaction: {
+          ...state.interaction,
+          lastScreen: { x: action.screenX, y: action.screenY }
+        }
+      };
+
+    case "editor/interaction/openingDragMove":
+      if (
+        state.interaction.mode !== "draggingOpening" ||
         state.interaction.pointerId !== action.pointerId
       ) {
         return state;
@@ -453,11 +523,13 @@ export function editorUiReducer(state, action) {
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
           dragFixture: null,
+          dragOpening: null,
           drawRectDraft: {
             startWorld: { x: action.startWorldX, y: action.startWorldY },
             currentWorld: { x: action.startWorldX, y: action.startWorldY }
           },
           resizeRectangle: null,
+          resizeOpening: null,
           calibrationDraft: null
         }
       };
@@ -491,6 +563,7 @@ export function editorUiReducer(state, action) {
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
           dragFixture: null,
+          dragOpening: null,
           drawRectDraft: null,
           resizeRectangle: {
             rectangleId: action.rectangleId,
@@ -503,6 +576,27 @@ export function editorUiReducer(state, action) {
               h: action.rectH
             }
           },
+          resizeOpening: null,
+          calibrationDraft: null
+        }
+      };
+
+    case "editor/interaction/openingResizeStart":
+      return {
+        ...state,
+        interaction: {
+          mode: "resizingOpening",
+          pointerId: action.pointerId,
+          lastScreen: { x: action.screenX, y: action.screenY },
+          dragRectangle: null,
+          dragFixture: null,
+          dragOpening: null,
+          drawRectDraft: null,
+          resizeRectangle: null,
+          resizeOpening: {
+            openingId: action.openingId,
+            edge: action.edge
+          },
           calibrationDraft: null
         }
       };
@@ -510,6 +604,21 @@ export function editorUiReducer(state, action) {
     case "editor/interaction/resizeMove":
       if (
         state.interaction.mode !== "resizingRect" ||
+        state.interaction.pointerId !== action.pointerId
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        interaction: {
+          ...state.interaction,
+          lastScreen: { x: action.screenX, y: action.screenY }
+        }
+      };
+
+    case "editor/interaction/openingResizeMove":
+      if (
+        state.interaction.mode !== "resizingOpening" ||
         state.interaction.pointerId !== action.pointerId
       ) {
         return state;
@@ -531,8 +640,10 @@ export function editorUiReducer(state, action) {
           lastScreen: { x: action.screenX, y: action.screenY },
           dragRectangle: null,
           dragFixture: null,
+          dragOpening: null,
           drawRectDraft: null,
           resizeRectangle: null,
+          resizeOpening: null,
           calibrationDraft: {
             startWorld: { x: action.startWorldX, y: action.startWorldY },
             currentWorld: { x: action.startWorldX, y: action.startWorldY }
@@ -572,8 +683,10 @@ export function editorUiReducer(state, action) {
           lastScreen: null,
           dragRectangle: null,
           dragFixture: null,
+          dragOpening: null,
           drawRectDraft: null,
           resizeRectangle: null,
+          resizeOpening: null,
           calibrationDraft: null
         }
       };
@@ -591,7 +704,9 @@ function normalizeEditorTool(tool) {
     tool === "mergeRoom" ||
     tool === "placeSwitch" ||
     tool === "placeLamp" ||
-    tool === "linkLighting"
+    tool === "linkLighting" ||
+    tool === "placeDoor" ||
+    tool === "placeWindow"
   ) {
     return tool;
   }
@@ -619,6 +734,14 @@ function normalizeFixtureId(fixtureId) {
     return null;
   }
   const trimmed = fixtureId.trim();
+  return trimmed || null;
+}
+
+function normalizeOpeningId(openingId) {
+  if (typeof openingId !== "string") {
+    return null;
+  }
+  const trimmed = openingId.trim();
   return trimmed || null;
 }
 

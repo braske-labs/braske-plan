@@ -1,14 +1,15 @@
 import { deriveBaseboardCandidates } from "../../src/editor/geometry/baseboards.js";
 import { assert, assertClose, assertEqual, test } from "../test-runner.js";
 
-function createPlan(rectangles, metersPerWorldUnit = 0.01) {
+function createPlan(rectangles, metersPerWorldUnit = 0.01, rooms = []) {
   return {
     scale: {
       metersPerWorldUnit,
       referenceLine: null
     },
     entities: {
-      rectangles
+      rectangles,
+      rooms
     }
   };
 }
@@ -328,4 +329,99 @@ test("corner overlap from dual wallCm keeps near-corner interval on touching roo
   assertEqual(touchingLeftSegments[0].wallSource, "neighborWall");
   assertClose(touchingLeftSegments[0].y0, 0);
   assertClose(touchingLeftSegments[0].y1, 110);
+});
+
+test("baseboard exclusions remove bathroom and toilet from counted totals", () => {
+  const plan = createPlan(
+    [
+      {
+        id: "rect_generic",
+        kind: "roomRect",
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 80,
+        wallCm: { top: 12, right: 0, bottom: 0, left: 0 },
+        roomId: "room_generic"
+      },
+      {
+        id: "rect_bathroom",
+        kind: "roomRect",
+        x: 120,
+        y: 0,
+        w: 100,
+        h: 80,
+        wallCm: { top: 12, right: 0, bottom: 0, left: 0 },
+        roomId: "room_bathroom"
+      }
+    ],
+    0.01,
+    [
+      { id: "room_generic", name: "Living", roomType: "generic", rectangleIds: ["rect_generic"] },
+      { id: "room_bathroom", name: "Bath", roomType: "bathroom", rectangleIds: ["rect_bathroom"] }
+    ]
+  );
+
+  const result = deriveBaseboardCandidates(plan);
+
+  assertEqual(result.rawSegmentCount, 2);
+  assertEqual(result.segmentCount, 1);
+  assertEqual(result.excludedSegmentCount, 1);
+  assertClose(result.rawTotalLengthWorld, 200);
+  assertClose(result.totalLengthWorld, 100);
+  assertClose(result.excludedLengthWorld, 100);
+  assert(result.excludedRoomTypes.includes("bathroom"), "Expected bathroom exclusion to be active.");
+  assert(result.excludedRoomTypes.includes("toilet"), "Expected toilet exclusion to be active.");
+});
+
+test("baseboard exclusions are deterministic for multi-rectangle excluded room", () => {
+  const plan = createPlan(
+    [
+      {
+        id: "rect_bath_1",
+        kind: "roomRect",
+        x: 0,
+        y: 0,
+        w: 80,
+        h: 80,
+        wallCm: { top: 10, right: 0, bottom: 0, left: 0 },
+        roomId: "room_bath"
+      },
+      {
+        id: "rect_bath_2",
+        kind: "roomRect",
+        x: 90,
+        y: 0,
+        w: 60,
+        h: 80,
+        wallCm: { top: 10, right: 0, bottom: 0, left: 0 },
+        roomId: "room_bath"
+      }
+    ],
+    0.01,
+    [
+      {
+        id: "room_bath",
+        name: "Bathroom",
+        roomType: "bathroom",
+        rectangleIds: ["rect_bath_1", "rect_bath_2"]
+      }
+    ]
+  );
+
+  const first = deriveBaseboardCandidates(plan);
+  const second = deriveBaseboardCandidates(plan);
+
+  assertEqual(first.segmentCount, 0);
+  assertEqual(first.rawSegmentCount, 2);
+  assertEqual(first.excludedSegmentCount, 2);
+  assertClose(first.totalLengthWorld, 0);
+  assertClose(first.rawTotalLengthWorld, 140);
+  assertClose(first.excludedLengthWorld, 140);
+
+  assertEqual(second.segmentCount, first.segmentCount);
+  assertEqual(second.rawSegmentCount, first.rawSegmentCount);
+  assertEqual(second.excludedSegmentCount, first.excludedSegmentCount);
+  assertClose(second.rawTotalLengthWorld, first.rawTotalLengthWorld);
+  assertClose(second.excludedLengthWorld, first.excludedLengthWorld);
 });

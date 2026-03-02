@@ -294,6 +294,12 @@ body {
   overflow-wrap: anywhere;
 }
 
+.room-package-note {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  color: color-mix(in srgb, var(--warn) 88%, #6c5f4a);
+}
+
 .room-lines {
   margin: 0;
   padding-left: 16px;

@@ -22,10 +22,13 @@ export function createEditorShell(root) {
   const geometryFreezeToggleButton = root.querySelector("[data-editor-action='geometry-freeze-toggle']");
   const toolPlaceSwitchButton = root.querySelector("[data-editor-action='tool-place-switch']");
   const toolPlaceLampButton = root.querySelector("[data-editor-action='tool-place-lamp']");
+  const toolPlaceDoorButton = root.querySelector("[data-editor-action='tool-place-door']");
+  const toolPlaceWindowButton = root.querySelector("[data-editor-action='tool-place-window']");
   const toolLinkLightingButton = root.querySelector("[data-editor-action='tool-link-lighting']");
   const estimateToggleButton = root.querySelector("[data-editor-action='estimate-toggle']");
   const estimatePrintButton = root.querySelector("[data-editor-action='estimate-print']");
   const deleteSelectedButton = root.querySelector("[data-editor-action='rect-delete']");
+  const deleteSelectedOpeningButton = root.querySelector("[data-editor-action='opening-delete']");
   const deleteSelectedFixtureButton = root.querySelector("[data-editor-action='lighting-delete-fixture']");
   const unplugSelectedFixtureButton = root.querySelector("[data-editor-action='lighting-unplug-selected']");
   const clearLightingLinkSourceButton = root.querySelector("[data-editor-action='lighting-clear-link-source']");
@@ -50,6 +53,9 @@ export function createEditorShell(root) {
   const roomClearButton = root.querySelector("[data-editor-action='room-clear']");
   const mergeStatusElement = root.querySelector("[data-merge-status]");
   const lightingStatusElement = root.querySelector("[data-lighting-status]");
+  const paintingStatusElement = root.querySelector("[data-painting-status]");
+  const wallHeightInput = root.querySelector("[data-editor-input='wall-height-meters']");
+  const wallHeightApplyButton = root.querySelector("[data-editor-action='wall-height-apply']");
   const roomMergeCompleteButton = root.querySelector("[data-editor-action='room-merge-complete']");
   const roomMergeCancelButton = root.querySelector("[data-editor-action='room-merge-cancel']");
   const roomDissolveButton = root.querySelector("[data-editor-action='room-dissolve']");
@@ -93,10 +99,13 @@ export function createEditorShell(root) {
       geometryFreezeToggleButton,
       toolPlaceSwitchButton,
       toolPlaceLampButton,
+      toolPlaceDoorButton,
+      toolPlaceWindowButton,
       toolLinkLightingButton,
       estimateToggleButton,
       estimatePrintButton,
       deleteSelectedButton,
+      deleteSelectedOpeningButton,
       deleteSelectedFixtureButton,
       unplugSelectedFixtureButton,
       clearLightingLinkSourceButton,
@@ -121,6 +130,9 @@ export function createEditorShell(root) {
       roomClearButton,
       mergeStatusElement,
       lightingStatusElement,
+      paintingStatusElement,
+      wallHeightInput,
+      wallHeightApplyButton,
       roomMergeCompleteButton,
       roomMergeCancelButton,
       roomDissolveButton,
@@ -173,9 +185,12 @@ function buildShell() {
         <button type="button" data-editor-action="geometry-freeze-toggle" aria-pressed="false">Freeze Geometry: Off</button>
         <button type="button" data-editor-action="tool-place-switch" aria-pressed="false">Place Switch</button>
         <button type="button" data-editor-action="tool-place-lamp" aria-pressed="false">Place Lamp</button>
+        <button type="button" data-editor-action="tool-place-door" aria-pressed="false">Place Door</button>
+        <button type="button" data-editor-action="tool-place-window" aria-pressed="false">Place Window</button>
         <button type="button" data-editor-action="tool-link-lighting" aria-pressed="false">Link Lights</button>
         <button type="button" data-editor-action="estimate-toggle" aria-pressed="false">Estimate: Off</button>
         <button type="button" data-editor-action="rect-delete" disabled>Delete Rect</button>
+        <button type="button" data-editor-action="opening-delete" disabled>Delete Opening</button>
         <button type="button" data-editor-action="rect-toggle-kind" aria-pressed="false" disabled>Set As Wall</button>
         <details class="toolbar-disclosure wall-controls">
           <summary>
@@ -260,6 +275,27 @@ function buildShell() {
             <button type="button" data-editor-action="lighting-unplug-selected" disabled>Unplug Selected</button>
             <button type="button" data-editor-action="lighting-delete-fixture" disabled>Delete Fixture</button>
             <button type="button" data-editor-action="lighting-clear-link-source" disabled>Clear Link Source</button>
+          </div>
+        </details>
+        <details class="toolbar-disclosure paint-controls">
+          <summary>
+            <span class="toolbar-disclosure-title">Painting</span>
+            <span class="toolbar-inline-status" data-painting-status>h 2.70m</span>
+          </summary>
+          <div class="toolbar-disclosure-panel room-controls-panel">
+            <label class="room-field">
+              <span>Wall height (m)</span>
+              <input
+                type="number"
+                inputmode="decimal"
+                step="0.05"
+                min="0.1"
+                max="10"
+                data-editor-input="wall-height-meters"
+                value="2.70"
+              >
+            </label>
+            <button type="button" data-editor-action="wall-height-apply">Apply Height</button>
           </div>
         </details>
         <button type="button" data-editor-action="plan-export-json">Export JSON</button>

@@ -6,6 +6,7 @@ const OPPOSITE_SIDE = {
   bottom: "top",
   left: "right"
 };
+const DEFAULT_EXCLUDED_ROOM_TYPES = Object.freeze(["bathroom", "toilet"]);
 
 export { deriveRoomWallDecomposition } from "./room-wall-topology.js";
 
@@ -88,26 +89,46 @@ export function deriveBaseboardCandidates(plan, options = {}) {
     overlapToleranceWorld
   });
 
-  const totalLengthWorld = sumSegmentLength(segments);
+  const rawSegments = segments.slice();
+  const { countedSegments, excludedSegments, excludedRoomTypes } = splitSegmentsByRoomTypeExclusion(
+    rawSegments,
+    plan,
+    options.excludedRoomTypes
+  );
+
+  const totalLengthWorld = sumSegmentLength(countedSegments);
   const totalLengthMeters = metersPerWorldUnit ? totalLengthWorld * metersPerWorldUnit : null;
+  const rawTotalLengthWorld = sumSegmentLength(rawSegments);
+  const rawTotalLengthMeters = metersPerWorldUnit ? rawTotalLengthWorld * metersPerWorldUnit : null;
+  const excludedLengthWorld = sumSegmentLength(excludedSegments);
+  const excludedLengthMeters = metersPerWorldUnit != null ? excludedLengthWorld * metersPerWorldUnit : null;
   const candidateTotalLengthWorld = sumSegmentLength(candidateSegments);
   const candidateTotalLengthMeters = metersPerWorldUnit ? candidateTotalLengthWorld * metersPerWorldUnit : null;
 
   return {
-    segments,
-    segmentCount: segments.length,
+    segments: countedSegments,
+    segmentCount: countedSegments.length,
+    rawSegments,
+    rawSegmentCount: rawSegments.length,
+    excludedSegments,
+    excludedSegmentCount: excludedSegments.length,
+    excludedRoomTypes: Array.from(excludedRoomTypes),
     candidateSegments,
     candidateSegmentCount: candidateSegments.length,
-    prunedSegmentCount: Math.max(0, candidateSegments.length - segments.length),
+    prunedSegmentCount: Math.max(0, candidateSegments.length - rawSegments.length),
     roomRectangleCount,
     wallRectangleCount,
     totalLengthWorld,
     totalLengthMeters,
+    rawTotalLengthWorld,
+    rawTotalLengthMeters,
+    excludedLengthWorld,
+    excludedLengthMeters,
     candidateTotalLengthWorld,
     candidateTotalLengthMeters,
-    prunedLengthWorld: Math.max(0, candidateTotalLengthWorld - totalLengthWorld),
+    prunedLengthWorld: Math.max(0, candidateTotalLengthWorld - rawTotalLengthWorld),
     prunedLengthMeters:
-      metersPerWorldUnit != null ? Math.max(0, candidateTotalLengthWorld - totalLengthWorld) * metersPerWorldUnit : null,
+      metersPerWorldUnit != null ? Math.max(0, candidateTotalLengthWorld - rawTotalLengthWorld) * metersPerWorldUnit : null,
     sharedBoundaries,
     sharedBoundaryCount: sharedBoundaries.length,
     unsupportedOpenSides,
@@ -889,6 +910,88 @@ function resolveSupportWallSource(side) {
 
 function sumSegmentLength(segments) {
   return segments.reduce((sum, segment) => sum + (segment?.lengthWorld ?? 0), 0);
+}
+
+function splitSegmentsByRoomTypeExclusion(rawSegments, plan, excludedRoomTypesInput) {
+  const excludedRoomTypes = normalizeExcludedRoomTypes(excludedRoomTypesInput);
+  if (!Array.isArray(rawSegments) || rawSegments.length === 0) {
+    return {
+      countedSegments: [],
+      excludedSegments: [],
+      excludedRoomTypes
+    };
+  }
+  if (excludedRoomTypes.size === 0) {
+    return {
+      countedSegments: [...rawSegments],
+      excludedSegments: [],
+      excludedRoomTypes
+    };
+  }
+
+  const roomTypeById = buildRoomTypeById(plan);
+  const countedSegments = [];
+  const excludedSegments = [];
+
+  for (const segment of rawSegments) {
+    const roomType = deriveSegmentRoomType(segment, roomTypeById);
+    if (excludedRoomTypes.has(roomType)) {
+      excludedSegments.push(segment);
+    } else {
+      countedSegments.push(segment);
+    }
+  }
+
+  return {
+    countedSegments,
+    excludedSegments,
+    excludedRoomTypes
+  };
+}
+
+function normalizeExcludedRoomTypes(excludedRoomTypesInput) {
+  const source = Array.isArray(excludedRoomTypesInput)
+    ? excludedRoomTypesInput
+    : DEFAULT_EXCLUDED_ROOM_TYPES;
+  const normalized = new Set();
+  for (const roomType of source) {
+    const normalizedType = normalizeRoomTypeToken(roomType);
+    if (normalizedType) {
+      normalized.add(normalizedType);
+    }
+  }
+  return normalized;
+}
+
+function buildRoomTypeById(plan) {
+  const rooms = Array.isArray(plan?.entities?.rooms) ? plan.entities.rooms : [];
+  const roomTypeById = new Map();
+  for (const room of rooms) {
+    if (typeof room?.id !== "string" || !room.id) {
+      continue;
+    }
+    const roomType = normalizeRoomTypeToken(room.roomType) ?? "generic";
+    roomTypeById.set(room.id, roomType);
+  }
+  return roomTypeById;
+}
+
+function deriveSegmentRoomType(segment, roomTypeById) {
+  const roomId = typeof segment?.roomId === "string" && segment.roomId
+    ? segment.roomId
+    : null;
+  if (!roomId) {
+    return "generic";
+  }
+  return roomTypeById.get(roomId) ?? "generic";
+}
+
+function normalizeRoomTypeToken(roomType) {
+  if (typeof roomType !== "string") {
+    return null;
+  }
+  const normalized = roomType.trim().toLowerCase().replaceAll("-", "_").replaceAll(/\s+/g, "_");
+  return normalized || null;
 }
 
 function makeInterval(start, end, overlapToleranceWorld) {

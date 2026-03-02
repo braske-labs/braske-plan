@@ -47,6 +47,9 @@ Not included as persisted data:
   },
   "background": {},
   "scale": {},
+  "settings": {
+    "wallHeightMeters": 2.7
+  },
   "entities": {
     "rectangles": [],
     "openings": [],
@@ -91,6 +94,17 @@ Notes:
 - `metersPerWorldUnit` is the canonical conversion.
 - `referenceLine` is UX/debug traceability, not strictly required for calculations.
 
+### `settings`
+
+Plan-level quantity knobs.
+
+Suggested shape:
+- `wallHeightMeters`: number (`> 0`)
+
+Notes:
+- Used by painting quantity calculations.
+- Defaults to `2.7` in MVP and is editable from the toolbar.
+
 ### `entities.rectangles`
 
 Primary authored geometry for v0 editor slices.
@@ -134,18 +148,20 @@ Suggested opening shape:
 - `id`
 - `kind`: `"door"` | `"window"`
 - `host`
-  - `rectangleId` (or future wall-run id)
-  - `edge`: `"top"` | `"right"` | `"bottom"` | `"left"`
-- `offset`
-  - distance from edge start (world units)
-- `length`
-  - opening span (world units)
+  - `type`: `"wallSide"`
+  - `rectangleId`
+  - `side`: `"top"` | `"right"` | `"bottom"` | `"left"`
+  - `offset`: number in `[0..1]` along the host side
+- `widthWorld`
+  - opening span in world units (clamped to host side)
+- `x`, `y`
+  - derived host-projected center point (stored for debugging/visual checks)
 - `metadata`
   - optional type-specific fields (swing, sill, etc.) later
 
 Notes:
-- This shape is intentionally simple and may evolve when wall runs become explicit.
-- The key v0 decision is to anchor openings to authored geometry + edge, not free-floating screen pixels.
+- Openings are constrained to wall-capable sides only.
+- Host model is explicit and remains the source of truth; `x`,`y` are convenience/debug values.
 
 ### `entities.lighting`
 
@@ -174,8 +190,9 @@ Notes:
 - A rectangle references at most one `roomId`.
 - If `rectangle.roomId != null`, the room exists and includes that rectangle ID.
 - If `scale.metersPerWorldUnit != null`, it must be `> 0`.
-- Openings reference an existing host rectangle and a valid edge.
-- Opening `length > 0` and `offset >= 0`.
+- If `settings.wallHeightMeters != null`, it must be `> 0`.
+- Openings reference an existing host rectangle and a valid host side.
+- Opening `widthWorld > 0`; host `offset` is clamped to `[0..1]`.
 - Lighting links reference existing switches and valid targets (`lamp` or `lampGroup`).
 - Lighting groups include existing lamp fixture IDs only.
 
@@ -184,6 +201,7 @@ Notes:
 ### Persisted (Plan Model v0)
 - `background`
 - `scale`
+- `settings`
 - authored entities (`rectangles`, `rooms`, `openings`, `lighting`)
 - metadata/version
 

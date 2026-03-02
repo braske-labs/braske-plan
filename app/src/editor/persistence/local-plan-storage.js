@@ -195,7 +195,9 @@ function migratePlan(raw) {
   const background = isPlainObject(raw.background) ? raw.background : {};
   const backgroundTransform = isPlainObject(background.transform) ? background.transform : {};
   const scale = isPlainObject(raw.scale) ? raw.scale : {};
+  const settings = isPlainObject(raw.settings) ? raw.settings : {};
   const meta = isPlainObject(raw.meta) ? raw.meta : {};
+  const normalizedRectangles = normalizeRectangles(entities.rectangles);
 
   return {
     ...base,
@@ -224,9 +226,10 @@ function migratePlan(raw) {
       metersPerWorldUnit: positiveNumberOrNull(scale.metersPerWorldUnit, base.scale.metersPerWorldUnit),
       referenceLine: normalizeReferenceLine(scale.referenceLine)
     },
+    settings: normalizePlanSettings(settings, base.settings),
     entities: {
-      rectangles: normalizeRectangles(entities.rectangles),
-      openings: Array.isArray(entities.openings) ? entities.openings.slice() : [],
+      rectangles: normalizedRectangles,
+      openings: normalizeOpenings(entities.openings, normalizedRectangles),
       rooms: normalizeRooms(entities.rooms),
       lighting: normalizeLighting(entities.lighting)
     }
@@ -336,6 +339,81 @@ function normalizeRooms(rawRooms) {
   }
 
   return result;
+}
+
+function normalizePlanSettings(rawSettings, baseSettings) {
+  const settings = isPlainObject(rawSettings) ? rawSettings : {};
+  const base = isPlainObject(baseSettings) ? baseSettings : { wallHeightMeters: 2.7 };
+  return {
+    ...base,
+    wallHeightMeters: positiveNumber(settings.wallHeightMeters, base.wallHeightMeters)
+  };
+}
+
+function normalizeOpenings(rawOpenings, rectangles = []) {
+  if (!Array.isArray(rawOpenings)) {
+    return [];
+  }
+  const rectangleById = new Map(
+    Array.isArray(rectangles)
+      ? rectangles
+        .filter((rectangle) => typeof rectangle?.id === "string" && rectangle.id)
+        .map((rectangle) => [rectangle.id, rectangle])
+      : []
+  );
+  const result = [];
+  for (let index = 0; index < rawOpenings.length; index += 1) {
+    const rawOpening = rawOpenings[index];
+    if (!isPlainObject(rawOpening)) {
+      continue;
+    }
+    const id = typeof rawOpening.id === "string" && rawOpening.id ? rawOpening.id : `op_migrated_${index + 1}`;
+    const kind = rawOpening.kind === "door" || rawOpening.kind === "window" ? rawOpening.kind : "door";
+    const host = normalizeOpeningHost(rawOpening.host);
+    const widthWorld = positiveNumber(rawOpening.widthWorld, null);
+    if (!host || widthWorld == null) {
+      continue;
+    }
+    const rectangle = rectangleById.get(host.rectangleId);
+    if (!rectangle) {
+      continue;
+    }
+    result.push({
+      id,
+      kind,
+      host,
+      widthWorld,
+      x: finiteNumber(rawOpening.x, rectangle.x),
+      y: finiteNumber(rawOpening.y, rectangle.y)
+    });
+  }
+  return result;
+}
+
+function normalizeOpeningHost(rawHost) {
+  const host = isPlainObject(rawHost) ? rawHost : null;
+  if (!host || host.type !== "wallSide") {
+    return null;
+  }
+  const rectangleId = typeof host.rectangleId === "string" && host.rectangleId ? host.rectangleId : null;
+  const side = normalizeWallSide(host.side ?? host.edge);
+  const offset = clampNumber(host.offset, 0, 1, null);
+  if (!rectangleId || !side || offset == null) {
+    return null;
+  }
+  return {
+    type: "wallSide",
+    rectangleId,
+    side,
+    offset
+  };
+}
+
+function normalizeWallSide(side) {
+  if (side === "top" || side === "right" || side === "bottom" || side === "left") {
+    return side;
+  }
+  return null;
 }
 
 function normalizeLighting(rawLighting) {

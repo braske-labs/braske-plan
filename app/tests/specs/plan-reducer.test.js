@@ -58,6 +58,268 @@ test("plan reducer delete removes rectangle and cleans rooms/openings references
   });
 });
 
+test("plan reducer openings add projects to valid wall host", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        {
+          id: "rect_a",
+          kind: "roomRect",
+          x: 0,
+          y: 0,
+          w: 100,
+          h: 80,
+          wallCm: { top: 12, right: 0, bottom: 0, left: 0 },
+          roomId: null,
+          label: null
+        }
+      ]
+    }
+  };
+
+  const next = planReducer(plan, {
+    type: "plan/openings/add",
+    openingId: "op_1",
+    kind: "door",
+    widthWorld: 60,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0.5
+    }
+  });
+
+  assert(next !== plan, "Opening add should produce a new plan object.");
+  assertEqual(next.entities.openings.length, 1);
+  assertDeepEqual(next.entities.openings[0], {
+    id: "op_1",
+    kind: "door",
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0.5
+    },
+    widthWorld: 60,
+    x: 50,
+    y: 0
+  });
+});
+
+test("plan reducer openings add no-ops on non-wall-capable side", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        {
+          id: "rect_a",
+          kind: "roomRect",
+          x: 0,
+          y: 0,
+          w: 100,
+          h: 80,
+          wallCm: { top: 0, right: 0, bottom: 0, left: 0 },
+          roomId: null,
+          label: null
+        }
+      ]
+    }
+  };
+
+  const next = planReducer(plan, {
+    type: "plan/openings/add",
+    openingId: "op_1",
+    kind: "window",
+    widthWorld: 50,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0.4
+    }
+  });
+
+  assert(next === plan, "Opening add should no-op when host side has no wall.");
+});
+
+test("plan reducer openings move clamps center to preserve width", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        {
+          id: "rect_a",
+          kind: "roomRect",
+          x: 10,
+          y: 20,
+          w: 100,
+          h: 80,
+          wallCm: { top: 10, right: 0, bottom: 0, left: 0 },
+          roomId: null,
+          label: null
+        }
+      ],
+      openings: [
+        {
+          id: "op_1",
+          kind: "door",
+          host: {
+            type: "wallSide",
+            rectangleId: "rect_a",
+            side: "top",
+            offset: 0.5
+          },
+          widthWorld: 60,
+          x: 60,
+          y: 20
+        }
+      ]
+    }
+  };
+
+  const next = planReducer(plan, {
+    type: "plan/openings/move",
+    openingId: "op_1",
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0
+    }
+  });
+
+  assert(next !== plan, "Opening move should produce a new plan object.");
+  assertEqual(next.entities.openings[0].host.offset, 0.3);
+  assertEqual(next.entities.openings[0].x, 40);
+  assertEqual(next.entities.openings[0].y, 20);
+});
+
+test("plan reducer rectangle geometry update keeps hosted opening on side", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        {
+          id: "rect_a",
+          kind: "roomRect",
+          x: 0,
+          y: 0,
+          w: 100,
+          h: 80,
+          wallCm: { top: 14, right: 0, bottom: 0, left: 0 },
+          roomId: null,
+          label: null
+        }
+      ],
+      openings: [
+        {
+          id: "op_1",
+          kind: "window",
+          host: {
+            type: "wallSide",
+            rectangleId: "rect_a",
+            side: "top",
+            offset: 0.5
+          },
+          widthWorld: 60,
+          x: 50,
+          y: 0
+        }
+      ]
+    }
+  };
+
+  const next = planReducer(plan, {
+    type: "plan/rectangles/setGeometry",
+    rectangleId: "rect_a",
+    x: 0,
+    y: 0,
+    w: 50,
+    h: 80
+  });
+
+  assert(next !== plan, "Rectangle setGeometry should produce a new plan object.");
+  assertEqual(next.entities.openings[0].widthWorld, 50);
+  assertEqual(next.entities.openings[0].x, 25);
+  assertEqual(next.entities.openings[0].y, 0);
+  assertEqual(next.entities.openings[0].host.offset, 0.5);
+});
+
+test("plan reducer wall height setting updates at plan level", () => {
+  const plan = createEmptyPlan();
+  const next = planReducer(plan, {
+    type: "plan/settings/setWallHeightMeters",
+    wallHeightMeters: 3.15
+  });
+
+  assert(next !== plan, "Wall height update should produce a new plan object.");
+  assertEqual(next.settings.wallHeightMeters, 3.15);
+});
+
+test("plan reducer opening remains when host wallCm is removed", () => {
+  const base = createEmptyPlan();
+  const plan = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        {
+          id: "rect_a",
+          kind: "roomRect",
+          x: 0,
+          y: 0,
+          w: 100,
+          h: 80,
+          wallCm: { top: 10, right: 0, bottom: 0, left: 0 },
+          roomId: null,
+          label: null
+        }
+      ],
+      openings: [
+        {
+          id: "op_1",
+          kind: "door",
+          host: {
+            type: "wallSide",
+            rectangleId: "rect_a",
+            side: "top",
+            offset: 0.5
+          },
+          widthWorld: 40,
+          x: 50,
+          y: 0
+        }
+      ]
+    }
+  };
+
+  const next = planReducer(plan, {
+    type: "plan/rectangles/setWallCm",
+    rectangleId: "rect_a",
+    side: "top",
+    value: 0
+  });
+
+  assert(next !== plan, "Wall cm edit should produce a new plan object.");
+  assertEqual(next.entities.openings.length, 1);
+  assertDeepEqual(next.entities.openings[0].host, {
+    type: "wallSide",
+    rectangleId: "rect_a",
+    side: "top",
+    offset: 0.5
+  });
+});
+
 test("plan reducer setWallCm updates selected rectangle side value", () => {
   const base = createEmptyPlan();
   const plan = {
