@@ -431,7 +431,11 @@ export function editorUiReducer(state, action) {
         }
       };
 
-    case "editor/interaction/rectDragStart":
+    case "editor/interaction/rectDragStart": {
+      const dragStartX = Number.isFinite(action.startScreenX) ? action.startScreenX : action.screenX;
+      const dragStartY = Number.isFinite(action.startScreenY) ? action.startScreenY : action.screenY;
+      const dragRectangleStartX = Number.isFinite(action.startRectangleX) ? action.startRectangleX : 0;
+      const dragRectangleStartY = Number.isFinite(action.startRectangleY) ? action.startRectangleY : 0;
       return {
         ...state,
         interaction: {
@@ -441,7 +445,12 @@ export function editorUiReducer(state, action) {
           dragRectangle: {
             rectangleId: action.rectangleId,
             offsetX: action.offsetX,
-            offsetY: action.offsetY
+            offsetY: action.offsetY,
+            startScreenX: dragStartX,
+            startScreenY: dragStartY,
+            startRectangleX: dragRectangleStartX,
+            startRectangleY: dragRectangleStartY,
+            groupRectangles: normalizeDragGroupRectangles(action.groupRectangles)
           },
           dragFixture: null,
           dragOpening: null,
@@ -451,6 +460,7 @@ export function editorUiReducer(state, action) {
           calibrationDraft: null
         }
       };
+    }
 
     case "editor/interaction/rectDragMove":
       if (
@@ -767,6 +777,25 @@ function normalizeOpeningId(openingId) {
   }
   const trimmed = openingId.trim();
   return trimmed || null;
+}
+
+function normalizeDragGroupRectangles(groupRectangles) {
+  if (!Array.isArray(groupRectangles)) {
+    return [];
+  }
+  const normalized = [];
+  for (const candidate of groupRectangles) {
+    const id = normalizeRectangleId(candidate?.id);
+    const x = candidate?.x;
+    const y = candidate?.y;
+    const w = candidate?.w;
+    const h = candidate?.h;
+    if (!id || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) {
+      continue;
+    }
+    normalized.push({ id, x, y, w, h });
+  }
+  return normalized;
 }
 
 function isPlainObject(value) {

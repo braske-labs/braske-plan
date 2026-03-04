@@ -20,12 +20,16 @@ export function createEditorShell(root) {
   const calibrateScaleByAreaButton = root.querySelector("[data-editor-action='scale-calibrate-area']");
   const toolMergeRoomButton = root.querySelector("[data-editor-action='tool-merge-room']");
   const geometryFreezeToggleButton = root.querySelector("[data-editor-action='geometry-freeze-toggle']");
+  const normalizeCmGridButton = root.querySelector("[data-editor-action='rect-normalize-cm']");
   const toolPlaceSwitchButton = root.querySelector("[data-editor-action='tool-place-switch']");
   const toolPlaceLampButton = root.querySelector("[data-editor-action='tool-place-lamp']");
   const toolPlaceDoorButton = root.querySelector("[data-editor-action='tool-place-door']");
   const toolPlaceWindowButton = root.querySelector("[data-editor-action='tool-place-window']");
   const toolLinkLightingButton = root.querySelector("[data-editor-action='tool-link-lighting']");
   const estimateToggleButton = root.querySelector("[data-editor-action='estimate-toggle']");
+  const estimateGroupModeToggleButton = root.querySelector("[data-editor-action='estimate-group-mode-toggle']");
+  const roomHighlightToggleButton = root.querySelector("[data-editor-action='view-room-highlighting-toggle']");
+  const wallsBlackToggleButton = root.querySelector("[data-editor-action='view-walls-black-toggle']");
   const estimatePrintButton = root.querySelector("[data-editor-action='estimate-print']");
   const deleteSelectedButton = root.querySelector("[data-editor-action='rect-delete']");
   const deleteSelectedOpeningButton = root.querySelector("[data-editor-action='opening-delete']");
@@ -53,7 +57,10 @@ export function createEditorShell(root) {
   const roomClearButton = root.querySelector("[data-editor-action='room-clear']");
   const mergeStatusElement = root.querySelector("[data-merge-status]");
   const lightingStatusElement = root.querySelector("[data-lighting-status]");
+  const openingStatusElement = root.querySelector("[data-opening-status]");
   const paintingStatusElement = root.querySelector("[data-painting-status]");
+  const lightingProductSelect = root.querySelector("[data-editor-input='lighting-product-id']");
+  const openingDoorProductSelect = root.querySelector("[data-editor-input='opening-door-product-id']");
   const wallHeightInput = root.querySelector("[data-editor-input='wall-height-meters']");
   const wallHeightApplyButton = root.querySelector("[data-editor-action='wall-height-apply']");
   const roomMergeCompleteButton = root.querySelector("[data-editor-action='room-merge-complete']");
@@ -98,12 +105,16 @@ export function createEditorShell(root) {
       calibrateScaleByAreaButton,
       toolMergeRoomButton,
       geometryFreezeToggleButton,
+      normalizeCmGridButton,
       toolPlaceSwitchButton,
       toolPlaceLampButton,
       toolPlaceDoorButton,
       toolPlaceWindowButton,
       toolLinkLightingButton,
       estimateToggleButton,
+      estimateGroupModeToggleButton,
+      roomHighlightToggleButton,
+      wallsBlackToggleButton,
       estimatePrintButton,
       deleteSelectedButton,
       deleteSelectedOpeningButton,
@@ -131,7 +142,10 @@ export function createEditorShell(root) {
       roomClearButton,
       mergeStatusElement,
       lightingStatusElement,
+      openingStatusElement,
       paintingStatusElement,
+      lightingProductSelect,
+      openingDoorProductSelect,
       wallHeightInput,
       wallHeightApplyButton,
       roomMergeCompleteButton,
@@ -185,12 +199,15 @@ function buildShell() {
         <button type="button" data-editor-action="scale-calibrate-area" disabled>Calibrate by Area</button>
         <button type="button" data-editor-action="tool-merge-room" aria-pressed="false">Merge Room</button>
         <button type="button" data-editor-action="geometry-freeze-toggle" aria-pressed="false">Freeze Geometry: Off</button>
+        <button type="button" data-editor-action="rect-normalize-cm" disabled>Normalize CM Grid</button>
         <button type="button" data-editor-action="tool-place-switch" aria-pressed="false">Place Switch</button>
         <button type="button" data-editor-action="tool-place-lamp" aria-pressed="false">Place Lamp</button>
         <button type="button" data-editor-action="tool-place-door" aria-pressed="false">Place Door</button>
         <button type="button" data-editor-action="tool-place-window" aria-pressed="false">Place Window</button>
         <button type="button" data-editor-action="tool-link-lighting" aria-pressed="false">Link Lights</button>
         <button type="button" data-editor-action="estimate-toggle" aria-pressed="false">Estimate: Off</button>
+        <button type="button" data-editor-action="view-room-highlighting-toggle" aria-pressed="true">Room Highlighting: On</button>
+        <button type="button" data-editor-action="view-walls-black-toggle" aria-pressed="false">Walls Black: Off</button>
         <button type="button" data-editor-action="rect-delete" disabled>Delete Rect</button>
         <button type="button" data-editor-action="opening-delete" disabled>Delete Opening</button>
         <button type="button" data-editor-action="rect-toggle-kind" aria-pressed="false" disabled>Set As Wall</button>
@@ -277,6 +294,26 @@ function buildShell() {
             <button type="button" data-editor-action="lighting-unplug-selected" disabled>Unplug Selected</button>
             <button type="button" data-editor-action="lighting-delete-fixture" disabled>Delete Fixture</button>
             <button type="button" data-editor-action="lighting-clear-link-source" disabled>Clear Link Source</button>
+            <label class="room-field">
+              <span>Selected Fixture Product</span>
+              <select data-editor-input="lighting-product-id" disabled>
+                <option value="">Auto</option>
+              </select>
+            </label>
+          </div>
+        </details>
+        <details class="toolbar-disclosure opening-controls">
+          <summary>
+            <span class="toolbar-disclosure-title">Openings</span>
+            <span class="toolbar-inline-status" data-opening-status>No opening selected</span>
+          </summary>
+          <div class="toolbar-disclosure-panel merge-controls-panel">
+            <label class="room-field">
+              <span>Door Product</span>
+              <select data-editor-input="opening-door-product-id" disabled>
+                <option value="">Default</option>
+              </select>
+            </label>
           </div>
         </details>
         <details class="toolbar-disclosure paint-controls">
@@ -332,6 +369,7 @@ function buildShell() {
         <aside class="estimate-panel" data-estimate-panel hidden>
           <div class="estimate-panel-header">
             <strong>Estimate Preview</strong>
+            <button type="button" data-editor-action="estimate-group-mode-toggle" aria-pressed="false">Group: Room</button>
             <button type="button" data-editor-action="estimate-print">Print / PDF</button>
           </div>
           <div class="estimate-panel-body" data-estimate-body>

@@ -50,6 +50,9 @@ const BACKGROUND_OPACITY_STEP = 0.05;
 const BACKGROUND_SCALE_UP = 1.05;
 const BACKGROUND_SCALE_DOWN = 1 / BACKGROUND_SCALE_UP;
 const SNAP_TOLERANCE_PX = 10;
+const RECT_DRAG_DEADZONE_PX = 5;
+const METRIC_DRAG_QUANTIZATION_STEP_METERS = 0.01;
+const DEFAULT_DRAG_QUANTIZATION_WORLD = 1;
 const MIN_CALIBRATION_LINE_WORLD = 8;
 const WALL_CM_STEP = 1;
 const DEFAULT_ROOM_TYPE = "generic";
@@ -65,12 +68,38 @@ const MIN_OPENING_WIDTH_WORLD = 24;
 const DEFAULT_OPENING_WIDTH_WORLD = 90;
 const ESTIMATE_CURRENCY_SYMBOL = "€";
 const BASEBOARD_EXCLUDED_ROOM_TYPES = Object.freeze(["bathroom", "toilet"]);
-const ESTIMATE_DEFAULT_RATES = Object.freeze({
-  baseboardPerM: 18,
-  flooringPerM2: 28,
-  paintingPerM2: 9,
-  switchEach: 22,
-  lampEach: 16
+const DEFAULT_QUOTE_MODEL = Object.freeze({
+  groupMode: "room",
+  catalog: {
+    baseboardProfiles: [
+      { id: "baseboard_standard", name: "Baseboard Standard", materialPerM: 6, laborPerM: 12 }
+    ],
+    flooringTypes: [
+      { id: "floor_standard", name: "Floor Standard", materialPerM2: 14, laborPerM2: 14 },
+      { id: "floor_tiles", name: "Tiles", materialPerM2: 24, laborPerM2: 22 }
+    ],
+    paintingTypes: [
+      { id: "paint_standard", name: "Paint Standard", materialPerM2: 2.5, laborPerM2: 7 }
+    ],
+    switchProducts: [
+      { id: "switch_standard", name: "Switch Standard", unitPrice: 22 }
+    ],
+    lampProducts: [
+      { id: "lamp_standard", name: "Lamp Standard", unitPrice: 16 }
+    ],
+    doorProducts: [
+      { id: "door_standard", name: "Door Standard", unitPrice: 145 }
+    ]
+  },
+  defaults: {
+    baseboardProfileId: "baseboard_standard",
+    flooringTypeId: "floor_standard",
+    paintingTypeId: "paint_standard",
+    switchProductId: "switch_standard",
+    lampProductId: "lamp_standard",
+    doorProductId: "door_standard"
+  },
+  roomConfigs: {}
 });
 
 export function mountEditorRuntime(options) {
@@ -444,15 +473,31 @@ export function mountEditorRuntime(options) {
         return;
       }
       const dragOffset = computeRectangleDragOffset(hit.rectangle, worldPoint);
+      const dragGroupRectangleIds = getDragGroupRectangleIds(plan, hit.rectangle);
+      const dragGroupRectangles = dragGroupRectangleIds
+        .map((rectangleId) => plan.entities.rectangles.find((rectangle) => rectangle.id === rectangleId))
+        .filter(Boolean)
+        .map((rectangle) => ({
+          id: rectangle.id,
+          x: rectangle.x,
+          y: rectangle.y,
+          w: rectangle.w,
+          h: rectangle.h
+        }));
       canvas.setPointerCapture(event.pointerId);
       store.dispatch({
         type: "editor/interaction/rectDragStart",
         pointerId: event.pointerId,
         screenX: event.clientX,
         screenY: event.clientY,
+        startScreenX: event.clientX,
+        startScreenY: event.clientY,
         rectangleId: hit.rectangle.id,
         offsetX: dragOffset.x,
-        offsetY: dragOffset.y
+        offsetY: dragOffset.y,
+        startRectangleX: hit.rectangle.x,
+        startRectangleY: hit.rectangle.y,
+        groupRectangles: dragGroupRectangles
       });
       syncEditorChrome();
       return;
@@ -516,7 +561,23 @@ export function mountEditorRuntime(options) {
       }
       const worldPoint = screenToWorld(state.editorState.camera, point.x, point.y);
       const dragRectangle = state.editorState.interaction.dragRectangle;
-      const nextPosition = computeRectanglePositionFromPointer(worldPoint, {
+      const screenDxFromStart = event.clientX - (Number.isFinite(dragRectangle.startScreenX)
+        ? dragRectangle.startScreenX
+        : event.clientX);
+      const screenDyFromStart = event.clientY - (Number.isFinite(dragRectangle.startScreenY)
+        ? dragRectangle.startScreenY
+        : event.clientY);
+      if (!hasPointerExceededDeadzone(screenDxFromStart, screenDyFromStart, RECT_DRAG_DEADZONE_PX)) {
+        store.dispatch({
+          type: "editor/interaction/rectDragMove",
+          pointerId: event.pointerId,
+          screenX: event.clientX,
+          screenY: event.clientY
+        });
+        return;
+      }
+
+      const nextPositionRaw = computeRectanglePositionFromPointer(worldPoint, {
         x: dragRectangle.offsetX,
         y: dragRectangle.offsetY
       });
@@ -533,21 +594,44 @@ export function mountEditorRuntime(options) {
         return;
       }
 
-      const dragGroupRectangleIds = getDragGroupRectangleIds(state.plan, draggedRectangle);
-      const dx = nextPosition.x - draggedRectangle.x;
-      const dy = nextPosition.y - draggedRectangle.y;
-
-      if (dragGroupRectangleIds.length > 1) {
-        if (dx !== 0 || dy !== 0) {
-          const dragGroupRectangleIdSet = new Set(dragGroupRectangleIds);
-          let groupDx = dx;
-          let groupDy = dy;
-          const snapWallWorld = getRectangleWallWorld(draggedRectangle, state.plan.scale?.metersPerWorldUnit);
-          const proposedDraggedRectangle = {
-            x: nextPosition.x,
-            y: nextPosition.y,
+      const dragGroupRectangles = Array.isArray(dragRectangle.groupRectangles) && dragRectangle.groupRectangles.length > 0
+        ? dragRectangle.groupRectangles
+        : [{
+            id: draggedRectangle.id,
+            x: draggedRectangle.x,
+            y: draggedRectangle.y,
             w: draggedRectangle.w,
             h: draggedRectangle.h
+          }];
+      const draggedSnapshot = dragGroupRectangles.find(
+        (rectangle) => rectangle.id === dragRectangle.rectangleId
+      );
+      if (!draggedSnapshot) {
+        store.dispatch({
+          type: "editor/interaction/rectDragMove",
+          pointerId: event.pointerId,
+          screenX: event.clientX,
+          screenY: event.clientY
+        });
+        return;
+      }
+      const dragQuantizationWorld = getDragQuantizationWorld(state.plan.scale?.metersPerWorldUnit);
+      const quantizedNextX = quantizeAroundAnchor(nextPositionRaw.x, draggedSnapshot.x, dragQuantizationWorld);
+      const quantizedNextY = quantizeAroundAnchor(nextPositionRaw.y, draggedSnapshot.y, dragQuantizationWorld);
+      const dx = quantizedNextX - draggedSnapshot.x;
+      const dy = quantizedNextY - draggedSnapshot.y;
+
+      if (dragGroupRectangles.length > 1) {
+        if (dx !== 0 || dy !== 0) {
+          const dragGroupRectangleIdSet = new Set(dragGroupRectangles.map((rectangle) => rectangle.id));
+          let groupDx = dx;
+          let groupDy = dy;
+          const snapWallWorld = getRectangleWallWorld(draggedSnapshot, state.plan.scale?.metersPerWorldUnit);
+          const proposedDraggedRectangle = {
+            x: draggedSnapshot.x + dx,
+            y: draggedSnapshot.y + dy,
+            w: draggedSnapshot.w,
+            h: draggedSnapshot.h
           };
           const proposedDraggedShell = interiorRectToOuterRect(proposedDraggedRectangle, snapWallWorld);
           if (proposedDraggedShell) {
@@ -563,23 +647,18 @@ export function mountEditorRuntime(options) {
             );
             const snappedDraggedInterior = outerRectToInteriorRect(snapResult.rectangle, snapWallWorld);
             if (snappedDraggedInterior) {
-              groupDx = snappedDraggedInterior.x - draggedRectangle.x;
-              groupDy = snappedDraggedInterior.y - draggedRectangle.y;
+              groupDx = snappedDraggedInterior.x - draggedSnapshot.x;
+              groupDy = snappedDraggedInterior.y - draggedSnapshot.y;
             }
           }
 
-          const groupUpdates = dragGroupRectangleIds.map((rectangleId) => {
-            const rectangle = state.plan.entities.rectangles.find((candidate) => candidate.id === rectangleId);
-            return rectangle
-              ? {
-                  id: rectangle.id,
-                  x: rectangle.x + groupDx,
-                  y: rectangle.y + groupDy,
-                  w: rectangle.w,
-                  h: rectangle.h
-                }
-              : null;
-          }).filter(Boolean);
+          const groupUpdates = dragGroupRectangles.map((rectangle) => ({
+            id: rectangle.id,
+            x: rectangle.x + groupDx,
+            y: rectangle.y + groupDy,
+            w: rectangle.w,
+            h: rectangle.h
+          }));
           applyRectangleGeometryUpdates(state.plan, groupUpdates, {
             enforceRoomConnectivity: true
           });
@@ -594,31 +673,27 @@ export function mountEditorRuntime(options) {
         return;
       }
 
-      const proposedRectangle = draggedRectangle
-        ? {
-            x: nextPosition.x,
-            y: nextPosition.y,
-            w: draggedRectangle.w,
-            h: draggedRectangle.h
-          }
-        : { x: nextPosition.x, y: nextPosition.y, w: 0, h: 0 };
+      const proposedRectangle = {
+        x: quantizedNextX,
+        y: quantizedNextY,
+        w: draggedSnapshot.w,
+        h: draggedSnapshot.h
+      };
       let snappedRectangle = proposedRectangle;
-      if (draggedRectangle) {
-        const snapWallWorld = getRectangleWallWorld(draggedRectangle, state.plan.scale?.metersPerWorldUnit);
-        const proposedShell = interiorRectToOuterRect(proposedRectangle, snapWallWorld);
-        if (proposedShell) {
-          const snapResult = snapDraggedRectangle(
-            proposedShell,
-            buildPlanShellRectangles(state.plan),
-            {
-              excludeRectangleId: dragRectangle.rectangleId,
-              toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom
-            }
-          );
-          const snappedInterior = outerRectToInteriorRect(snapResult.rectangle, snapWallWorld);
-          if (snappedInterior) {
-            snappedRectangle = snappedInterior;
+      const snapWallWorld = getRectangleWallWorld(draggedSnapshot, state.plan.scale?.metersPerWorldUnit);
+      const proposedShell = interiorRectToOuterRect(proposedRectangle, snapWallWorld);
+      if (proposedShell) {
+        const snapResult = snapDraggedRectangle(
+          proposedShell,
+          buildPlanShellRectangles(state.plan),
+          {
+            excludeRectangleId: dragRectangle.rectangleId,
+            toleranceWorld: SNAP_TOLERANCE_PX / state.editorState.camera.zoom
           }
+        );
+        const snappedInterior = outerRectToInteriorRect(snapResult.rectangle, snapWallWorld);
+        if (snappedInterior) {
+          snappedRectangle = snappedInterior;
         }
       }
 
@@ -947,14 +1022,16 @@ export function mountEditorRuntime(options) {
       const draft = state.editorState.interaction.drawRectDraft;
       const nextRect = normalizeRectangleFromPoints(draft.startWorld, draft.currentWorld);
       if (rectangleMeetsMinimumSize(nextRect, MIN_RECT_SIZE)) {
+        const quantizationWorld = getDragQuantizationWorld(state.plan.scale?.metersPerWorldUnit);
+        const quantizedRect = quantizeRectangleGeometry(nextRect, quantizationWorld);
         const rectangleId = `rect_user_${nextUserRectangleId++}`;
         store.dispatch({
           type: "plan/rectangles/create",
           rectangleId,
-          x: nextRect.x,
-          y: nextRect.y,
-          w: nextRect.w,
-          h: nextRect.h
+          x: quantizedRect.x,
+          y: quantizedRect.y,
+          w: quantizedRect.w,
+          h: quantizedRect.h
         });
         store.dispatch({
           type: "editor/selection/set",
@@ -1099,6 +1176,12 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.normalizeCmGridButton) {
+    controls.normalizeCmGridButton.addEventListener("click", () => {
+      normalizeAllRectanglesToCentimeterGrid();
+    });
+  }
+
   if (controls.toolPlaceSwitchButton) {
     controls.toolPlaceSwitchButton.addEventListener("click", () => {
       store.dispatch({ type: "editor/tool/set", tool: "placeSwitch" });
@@ -1136,9 +1219,259 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  if (controls.estimateGroupModeToggleButton) {
+    controls.estimateGroupModeToggleButton.addEventListener("click", () => {
+      const snapshot = store.getState();
+      const quote = getQuoteModel(snapshot.plan);
+      const nextMode = quote.groupMode === "job" ? "room" : "job";
+      store.dispatch({
+        type: "plan/quote/setGroupMode",
+        groupMode: nextMode
+      });
+      syncEditorChrome();
+    });
+  }
+
+  if (controls.roomHighlightToggleButton) {
+    controls.roomHighlightToggleButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/view/toggleRoomHighlighting" });
+      syncEditorChrome();
+    });
+  }
+
+  if (controls.wallsBlackToggleButton) {
+    controls.wallsBlackToggleButton.addEventListener("click", () => {
+      store.dispatch({ type: "plan/view/toggleWallsBlack" });
+      syncEditorChrome();
+    });
+  }
+
   if (controls.estimatePrintButton) {
     controls.estimatePrintButton.addEventListener("click", () => {
       window.print();
+    });
+  }
+
+  if (controls.estimateBodyElement) {
+    controls.estimateBodyElement.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const action = target.getAttribute("data-quote-action");
+      if (!action) {
+        return;
+      }
+      event.preventDefault();
+      if (action === "add-flooring-type") {
+        const nameInput = controls.estimateBodyElement.querySelector("[data-quote-input='new-flooring-name']");
+        const name = nameInput instanceof HTMLInputElement ? nameInput.value.trim() : "";
+        if (!name) {
+          return;
+        }
+        const snapshot = store.getState();
+        const quote = getQuoteModel(snapshot.plan);
+        const id = generateQuoteCatalogId("floor", name, quote.catalog.flooringTypes);
+        const selectedFlooringTypeId = getEstimateSelectValue(controls.estimateBodyElement, "flooringTypeId");
+        const selectedType = resolveQuoteCatalogItemById(
+          quote.catalog.flooringTypes,
+          selectedFlooringTypeId,
+          quote.defaults.flooringTypeId
+        );
+        store.dispatch({
+          type: "plan/quote/upsertCatalogItem",
+          catalogKey: "flooringTypes",
+          item: {
+            id,
+            name,
+            materialPerM2: selectedType?.materialPerM2 ?? 0,
+            laborPerM2: selectedType?.laborPerM2 ?? 0
+          }
+        });
+        store.dispatch({
+          type: "plan/quote/setDefault",
+          key: "flooringTypeId",
+          value: id
+        });
+        if (nameInput instanceof HTMLInputElement) {
+          nameInput.value = "";
+        }
+        syncEditorChrome();
+        return;
+      }
+
+      if (action === "add-painting-type") {
+        const nameInput = controls.estimateBodyElement.querySelector("[data-quote-input='new-painting-name']");
+        const name = nameInput instanceof HTMLInputElement ? nameInput.value.trim() : "";
+        if (!name) {
+          return;
+        }
+        const snapshot = store.getState();
+        const quote = getQuoteModel(snapshot.plan);
+        const id = generateQuoteCatalogId("paint", name, quote.catalog.paintingTypes);
+        const selectedPaintingTypeId = getEstimateSelectValue(controls.estimateBodyElement, "paintingTypeId");
+        const selectedType = resolveQuoteCatalogItemById(
+          quote.catalog.paintingTypes,
+          selectedPaintingTypeId,
+          quote.defaults.paintingTypeId
+        );
+        store.dispatch({
+          type: "plan/quote/upsertCatalogItem",
+          catalogKey: "paintingTypes",
+          item: {
+            id,
+            name,
+            materialPerM2: selectedType?.materialPerM2 ?? 0,
+            laborPerM2: selectedType?.laborPerM2 ?? 0
+          }
+        });
+        store.dispatch({
+          type: "plan/quote/setDefault",
+          key: "paintingTypeId",
+          value: id
+        });
+        if (nameInput instanceof HTMLInputElement) {
+          nameInput.value = "";
+        }
+        syncEditorChrome();
+        return;
+      }
+
+      const snapshot = store.getState();
+      const quote = getQuoteModel(snapshot.plan);
+      if (action === "apply-flooring-rates") {
+        applyAreaTypeRatesFromEstimateControls({
+          catalogKey: "flooringTypes",
+          selectInputKey: "flooringTypeId",
+          materialInputKey: "flooring-materialPerM2",
+          laborInputKey: "flooring-laborPerM2",
+          defaultKey: "flooringTypeId",
+          quote
+        });
+        return;
+      }
+      if (action === "apply-painting-rates") {
+        applyAreaTypeRatesFromEstimateControls({
+          catalogKey: "paintingTypes",
+          selectInputKey: "paintingTypeId",
+          materialInputKey: "painting-materialPerM2",
+          laborInputKey: "painting-laborPerM2",
+          defaultKey: "paintingTypeId",
+          quote
+        });
+        return;
+      }
+      if (action === "apply-baseboard-rates") {
+        const selectedProfileId = getEstimateSelectValue(controls.estimateBodyElement, "baseboardProfileId");
+        const selectedProfile = resolveQuoteCatalogItemById(
+          quote.catalog.baseboardProfiles,
+          selectedProfileId,
+          quote.defaults.baseboardProfileId
+        );
+        if (!selectedProfile) {
+          return;
+        }
+        const materialPerM = readEstimateControlNumber(controls.estimateBodyElement, "baseboard-materialPerM");
+        const laborPerM = readEstimateControlNumber(controls.estimateBodyElement, "baseboard-laborPerM");
+        if (materialPerM == null || laborPerM == null) {
+          return;
+        }
+        store.dispatch({
+          type: "plan/quote/upsertCatalogItem",
+          catalogKey: "baseboardProfiles",
+          item: {
+            ...selectedProfile,
+            materialPerM,
+            laborPerM
+          }
+        });
+        store.dispatch({
+          type: "plan/quote/setDefault",
+          key: "baseboardProfileId",
+          value: selectedProfile.id
+        });
+        syncEditorChrome();
+        return;
+      }
+      if (action === "apply-unit-prices") {
+        applyUnitPriceFromEstimateControls(quote, "switchProducts", "switchProductId", "switch-unitPrice");
+        applyUnitPriceFromEstimateControls(quote, "lampProducts", "lampProductId", "lamp-unitPrice");
+        applyUnitPriceFromEstimateControls(quote, "doorProducts", "doorProductId", "door-unitPrice");
+        syncEditorChrome();
+      }
+    });
+
+    controls.estimateBodyElement.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement)) {
+        return;
+      }
+      const inputKey = target.getAttribute("data-quote-input");
+      if (!inputKey) {
+        return;
+      }
+      const snapshot = store.getState();
+      const quote = getQuoteModel(snapshot.plan);
+      if (inputKey === "flooringTypeId") {
+        const selectedType = resolveQuoteCatalogItemById(
+          quote.catalog.flooringTypes,
+          normalizeRectangleIdForUi(target.value),
+          quote.defaults.flooringTypeId
+        );
+        syncEstimateRateInputsForAreaType(controls.estimateBodyElement, "flooring", selectedType);
+        return;
+      }
+      if (inputKey === "paintingTypeId") {
+        const selectedType = resolveQuoteCatalogItemById(
+          quote.catalog.paintingTypes,
+          normalizeRectangleIdForUi(target.value),
+          quote.defaults.paintingTypeId
+        );
+        syncEstimateRateInputsForAreaType(controls.estimateBodyElement, "painting", selectedType);
+        return;
+      }
+      if (inputKey === "baseboardProfileId") {
+        const selectedProfile = resolveQuoteCatalogItemById(
+          quote.catalog.baseboardProfiles,
+          normalizeRectangleIdForUi(target.value),
+          quote.defaults.baseboardProfileId
+        );
+        syncEstimateRateInputsForBaseboard(controls.estimateBodyElement, selectedProfile);
+      }
+    });
+  }
+
+  if (controls.lightingProductSelect) {
+    controls.lightingProductSelect.addEventListener("change", () => {
+      const snapshot = store.getState();
+      const selectedFixture = getSelectedLightingFixture(snapshot.plan, snapshot.editorState);
+      if (!selectedFixture) {
+        return;
+      }
+      const nextProductId = normalizeRectangleIdForUi(controls.lightingProductSelect.value);
+      store.dispatch({
+        type: "plan/lighting/setFixtureProduct",
+        fixtureId: selectedFixture.id,
+        productId: nextProductId
+      });
+      syncEditorChrome();
+    });
+  }
+
+  if (controls.openingDoorProductSelect) {
+    controls.openingDoorProductSelect.addEventListener("change", () => {
+      const snapshot = store.getState();
+      const selectedOpening = getSelectedOpening(snapshot.plan, snapshot.editorState);
+      if (!selectedOpening || selectedOpening.kind !== "door") {
+        return;
+      }
+      const nextProductId = normalizeRectangleIdForUi(controls.openingDoorProductSelect.value);
+      store.dispatch({
+        type: "plan/openings/setProduct",
+        openingId: selectedOpening.id,
+        productId: nextProductId
+      });
+      syncEditorChrome();
     });
   }
 
@@ -1332,6 +1665,56 @@ export function mountEditorRuntime(options) {
       }
       const roomId = summary.dataset.roomItemId;
       activateRoomFromSidebar(roomId, { center: true });
+    });
+
+    controls.roomListElement.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const roomEntryId = normalizeRectangleIdForUi(
+        target.getAttribute("data-room-quote-room-id")
+      );
+      if (!roomEntryId) {
+        return;
+      }
+
+      if (target instanceof HTMLInputElement && target.matches("[data-room-quote-field='includeBaseboard']")) {
+        store.dispatch({
+          type: "plan/quote/setRoomConfig",
+          roomEntryId,
+          patch: {
+            includeBaseboard: target.checked
+          }
+        });
+        syncEditorChrome();
+        return;
+      }
+
+      if (target instanceof HTMLSelectElement && target.matches("[data-room-quote-field='flooringTypeId']")) {
+        const flooringTypeId = normalizeRectangleIdForUi(target.value);
+        store.dispatch({
+          type: "plan/quote/setRoomConfig",
+          roomEntryId,
+          patch: {
+            flooringTypeId
+          }
+        });
+        syncEditorChrome();
+        return;
+      }
+
+      if (target instanceof HTMLSelectElement && target.matches("[data-room-quote-field='paintingTypeId']")) {
+        const paintingTypeId = normalizeRectangleIdForUi(target.value);
+        store.dispatch({
+          type: "plan/quote/setRoomConfig",
+          roomEntryId,
+          patch: {
+            paintingTypeId
+          }
+        });
+        syncEditorChrome();
+      }
     });
   }
 
@@ -1707,10 +2090,13 @@ export function mountEditorRuntime(options) {
         : 0;
       const internalSlideMode = isInternalSeamSlideAdjustEnabled(editorState) ? "slides:on" : "slides:off";
       const geometryLockMode = isGeometryEditingFrozen(editorState) ? "geom:frozen" : "geom:live";
+      const planView = getPlanViewState(plan);
+      const viewModeLabel = `view rooms:${planView.roomHighlighting ? "color" : "white"} walls:${planView.wallsBlack ? "black" : "normal"}`;
       const activeRoomId = deriveEffectiveActiveRoomId(plan, editorState);
       const selectedFixture = getSelectedLightingFixture(plan, editorState);
       const selectedOpening = getSelectedOpening(plan, editorState);
       const lightingTotals = computeLightingTotals(plan);
+      const quote = getQuoteModel(plan);
       const selectedFixtureLabel = selectedFixture
         ? `${selectedFixture.kind}:${selectedFixture.id}`
         : "none";
@@ -1722,7 +2108,7 @@ export function mountEditorRuntime(options) {
       statusElement.textContent =
         `T-0027/0028/0029 + T-0030/0031/0032 | ${backgroundLabel} | ${scaleLabel} | ${autosaveLabel} | ${validationLabel} | ${closureLabel} | overlap ${overlapFlashLabel} | ${baseboardLabel} | ${conflictLabel} | paint h:${wallHeightMeters.toFixed(2)}m | openings ${openingCount} sel:${selectedOpeningLabel} | lights s:${lightingTotals.switchCount} l:${lightingTotals.lampCount} lk:${lightingTotals.linkCount} sel:${selectedFixtureLabel} | file ${fileIoLabel} | tool ${tool} | pan | wheel zoom | ` +
         `camera ${camera.x.toFixed(1)}, ${camera.y.toFixed(1)} | ` +
-        `zoom ${camera.zoom.toFixed(2)}x | merge ${mergeSelectionCount} ${internalSlideMode} | ${geometryLockMode} | active-room ${activeRoomId ?? "none"} | ` +
+        `zoom ${camera.zoom.toFixed(2)}x | merge ${mergeSelectionCount} ${internalSlideMode} | ${geometryLockMode} | ${viewModeLabel} | quote:${quote.groupMode} | active-room ${activeRoomId ?? "none"} | ` +
         `rects ${plan.entities.rectangles.length} | selected ${selectedId}${selectedKindLabel ? ` (${selectedKindLabel})` : ""}${selectedDimsLabel ? ` ${selectedDimsLabel}` : ""}${selectedWallLabel ? ` [${selectedWallLabel}]` : ""}${selectedRoomLabel ? ` {${selectedRoomLabel}}` : ""} | ` +
         `fps ~${fps.toFixed(0)}`;
     }
@@ -1749,12 +2135,14 @@ export function mountEditorRuntime(options) {
         `Overlap flash: ${formatValidationOverlapFlashOverlay(validation, timestamp)}.<br>` +
         `File I/O: ${formatFileTransferStatusDetail(fileTransferStatus)}.<br>` +
         `Geometry lock: ${isGeometryEditingFrozen(editorState) ? "ON (rectangles cannot move/resize/change kind)" : "OFF"}.<br>` +
+        `View mode: rooms ${getPlanViewState(plan).roomHighlighting ? "highlighted" : "white"}; walls ${getPlanViewState(plan).wallsBlack ? "black" : "normal"}. Quote grouping: ${getQuoteModel(plan).groupMode}.<br>` +
         `Baseboard Debug colors: red=counted, amber dashed=excluded, blue dashed=closure gaps. Baseboard Conflicts toggle draws magenta conflict intervals.<br>` +
         `Openings: Place Door/Place Window by clicking near a wall side; drag segment to slide; drag white endpoints to resize on wall.<br>` +
         `Lighting quick use: double-click a switch in Navigate to toggle linked lamps; drag to move switch/lamp.<br>` +
         `Link mode: click switch (source), click lamps to link/unlink. Unplug Selected removes links for selected lamp/switch.<br>` +
         `Merge tool: select touching room rectangles, then Complete Merge. Merged room drag moves as one group; internal seams lock unless Internal Slides is enabled.<br>` +
         `Drag/resize snaps within ${SNAP_TOLERANCE_PX}px. Delete uses toolbar button or Delete/Backspace.<br>` +
+        `Normalize CM Grid button snaps all rectangle geometry to 1cm increments (requires calibrated scale).<br>` +
         `Autosave/load still active: ${describeLoadSource(persistenceStatus.loadSource)}; ${formatAutosaveStatusDetail(persistenceStatus)}.`;
     }
   }
@@ -1823,6 +2211,8 @@ export function mountEditorRuntime(options) {
   function syncEditorChrome() {
     const snapshot = store.getState();
     const state = snapshot.editorState;
+    const quote = getQuoteModel(snapshot.plan);
+    const planView = getPlanViewState(snapshot.plan);
     const geometryFrozen = isGeometryEditingFrozen(state);
     const mode = state.interaction.mode;
     if (shellElement) {
@@ -1849,6 +2239,11 @@ export function mountEditorRuntime(options) {
         ? "Freeze Geometry: On"
         : "Freeze Geometry: Off";
     }
+    if (controls.normalizeCmGridButton) {
+      const hasScale = Number.isFinite(snapshot.plan.scale?.metersPerWorldUnit) && snapshot.plan.scale.metersPerWorldUnit > 0;
+      const hasRectangles = Array.isArray(snapshot.plan?.entities?.rectangles) && snapshot.plan.entities.rectangles.length > 0;
+      controls.normalizeCmGridButton.disabled = geometryFrozen || !hasScale || !hasRectangles;
+    }
     if (controls.toolPlaceSwitchButton) {
       controls.toolPlaceSwitchButton.setAttribute("aria-pressed", state.tool === "placeSwitch" ? "true" : "false");
     }
@@ -1865,6 +2260,25 @@ export function mountEditorRuntime(options) {
     }
     if (controls.toolLinkLightingButton) {
       controls.toolLinkLightingButton.setAttribute("aria-pressed", state.tool === "linkLighting" ? "true" : "false");
+    }
+    if (controls.estimateGroupModeToggleButton) {
+      const isJob = quote.groupMode === "job";
+      controls.estimateGroupModeToggleButton.setAttribute("aria-pressed", isJob ? "true" : "false");
+      controls.estimateGroupModeToggleButton.textContent = isJob
+        ? "Group: Job"
+        : "Group: Room";
+    }
+    if (controls.roomHighlightToggleButton) {
+      controls.roomHighlightToggleButton.setAttribute("aria-pressed", planView.roomHighlighting ? "true" : "false");
+      controls.roomHighlightToggleButton.textContent = planView.roomHighlighting
+        ? "Room Highlighting: On"
+        : "Room Highlighting: Off";
+    }
+    if (controls.wallsBlackToggleButton) {
+      controls.wallsBlackToggleButton.setAttribute("aria-pressed", planView.wallsBlack ? "true" : "false");
+      controls.wallsBlackToggleButton.textContent = planView.wallsBlack
+        ? "Walls Black: On"
+        : "Walls Black: Off";
     }
     if (controls.roomInternalSlideToggleButton) {
       const enabled = isInternalSeamSlideAdjustEnabled(state);
@@ -1907,6 +2321,7 @@ export function mountEditorRuntime(options) {
     syncRoomControls(snapshot.plan, state);
     syncMergeControls(snapshot.plan, state);
     syncLightingControls(snapshot.plan, state);
+    syncOpeningControls(snapshot.plan, state);
     syncPaintingControls(snapshot.plan);
     syncAreaScaleCalibrationControl(snapshot.plan, state);
     if (controls.backgroundStatusElement) {
@@ -2498,6 +2913,57 @@ export function mountEditorRuntime(options) {
     return true;
   }
 
+  function normalizeAllRectanglesToCentimeterGrid() {
+    const snapshot = store.getState();
+    if (isGeometryEditingFrozen(snapshot.editorState)) {
+      return false;
+    }
+    const metersPerWorldUnit = snapshot.plan.scale?.metersPerWorldUnit;
+    if (!Number.isFinite(metersPerWorldUnit) || metersPerWorldUnit <= 0) {
+      window.alert("Calibrate scale first to normalize by centimeters.");
+      return false;
+    }
+    const rectangles = Array.isArray(snapshot.plan?.entities?.rectangles)
+      ? snapshot.plan.entities.rectangles
+      : [];
+    if (rectangles.length === 0) {
+      return false;
+    }
+    const quantizationWorld = getDragQuantizationWorld(metersPerWorldUnit);
+    const updates = rectangles.map((rectangle) => ({
+      id: rectangle.id,
+      x: rectangle.x,
+      y: rectangle.y,
+      w: rectangle.w,
+      h: rectangle.h
+    }));
+    const normalizedUpdates = normalizeRectangleGeometryUpdates(rectangles, updates, {
+      quantizationWorld
+    });
+    const rectangleById = new Map(rectangles.map((rectangle) => [rectangle.id, rectangle]));
+    const changedUpdates = normalizedUpdates.filter((update) => {
+      const current = rectangleById.get(update.id);
+      if (!current) {
+        return false;
+      }
+      return (
+        current.x !== update.x ||
+        current.y !== update.y ||
+        current.w !== update.w ||
+        current.h !== update.h
+      );
+    });
+    if (changedUpdates.length === 0) {
+      return false;
+    }
+    store.dispatch({
+      type: "plan/rectangles/setManyGeometry",
+      rectangles: changedUpdates
+    });
+    syncEditorChrome();
+    return true;
+  }
+
   function getMergeCompletionState(plan, editorState) {
     const mergeSelectionIds = Array.isArray(editorState.mergeSelection?.rectangleIds)
       ? editorState.mergeSelection.rectangleIds
@@ -2575,7 +3041,9 @@ export function mountEditorRuntime(options) {
     if (isGeometryEditingFrozen(snapshot.editorState)) {
       return false;
     }
-    const normalizedUpdates = normalizeRectangleGeometryUpdates(plan.entities.rectangles, rectangleUpdates);
+    const normalizedUpdates = normalizeRectangleGeometryUpdates(plan.entities.rectangles, rectangleUpdates, {
+      quantizationWorld: getDragQuantizationWorld(plan.scale?.metersPerWorldUnit)
+    });
     if (normalizedUpdates.length === 0) {
       return false;
     }
@@ -2679,6 +3147,7 @@ export function mountEditorRuntime(options) {
 
   function syncLightingControls(plan, editorState) {
     const selectedFixture = getSelectedLightingFixture(plan, editorState);
+    const quote = getQuoteModel(plan);
     const linkSourceSwitchId = normalizeRectangleIdForUi(editorState?.lightingSelection?.linkSwitchId);
     const selectedLinkSource = linkSourceSwitchId
       ? getLightingFixtureById(plan, linkSourceSwitchId)
@@ -2708,6 +3177,74 @@ export function mountEditorRuntime(options) {
 
     if (controls.clearLightingLinkSourceButton) {
       controls.clearLightingLinkSourceButton.disabled = !selectedLinkSource;
+    }
+
+    if (controls.lightingProductSelect) {
+      controls.lightingProductSelect.replaceChildren();
+      const select = controls.lightingProductSelect;
+      const fixtureKind = selectedFixture?.kind;
+      let products = [];
+      let fallbackProductId = null;
+      if (fixtureKind === "switch") {
+        products = quote.catalog.switchProducts;
+        fallbackProductId = quote.defaults.switchProductId;
+      } else if (fixtureKind === "lamp") {
+        products = quote.catalog.lampProducts;
+        fallbackProductId = quote.defaults.lampProductId;
+      }
+      const autoOption = document.createElement("option");
+      autoOption.value = "";
+      autoOption.textContent = fixtureKind ? "Default Product" : "No fixture selected";
+      select.append(autoOption);
+      for (const product of products) {
+        const option = document.createElement("option");
+        option.value = product.id;
+        option.textContent = `${product.name} (${formatEstimateCurrency(product.unitPrice)})`;
+        select.append(option);
+      }
+      const selectedProductId = normalizeRectangleIdForUi(selectedFixture?.productId) ?? fallbackProductId ?? "";
+      select.value = products.some((product) => product.id === selectedProductId)
+        ? selectedProductId
+        : "";
+      select.disabled = !selectedFixture || products.length === 0;
+    }
+  }
+
+  function syncOpeningControls(plan, editorState) {
+    const selectedOpening = getSelectedOpening(plan, editorState);
+    const quote = getQuoteModel(plan);
+    if (controls.openingStatusElement) {
+      if (!selectedOpening) {
+        controls.openingStatusElement.textContent = "No opening selected";
+      } else if (selectedOpening.kind === "door") {
+        controls.openingStatusElement.textContent = `Door ${selectedOpening.id}`;
+      } else {
+        controls.openingStatusElement.textContent = `Window ${selectedOpening.id} (free)`;
+      }
+    }
+    if (controls.openingDoorProductSelect) {
+      const select = controls.openingDoorProductSelect;
+      select.replaceChildren();
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "Default Door Product";
+      select.append(defaultOption);
+      for (const product of quote.catalog.doorProducts) {
+        const option = document.createElement("option");
+        option.value = product.id;
+        option.textContent = `${product.name} (${formatEstimateCurrency(product.unitPrice)})`;
+        select.append(option);
+      }
+      if (selectedOpening?.kind === "door") {
+        const selectedProductId = normalizeRectangleIdForUi(selectedOpening.productId);
+        select.value = quote.catalog.doorProducts.some((product) => product.id === selectedProductId)
+          ? selectedProductId
+          : "";
+        select.disabled = false;
+      } else {
+        select.value = "";
+        select.disabled = true;
+      }
     }
   }
 
@@ -2751,6 +3288,134 @@ export function mountEditorRuntime(options) {
       wallHeightMeters: parsed
     });
     syncEditorChrome();
+  }
+
+  function getEstimateSelectValue(container, inputKey) {
+    if (!(container instanceof HTMLElement)) {
+      return null;
+    }
+    const select = container.querySelector(`[data-quote-input='${inputKey}']`);
+    if (!(select instanceof HTMLSelectElement)) {
+      return null;
+    }
+    return normalizeRectangleIdForUi(select.value);
+  }
+
+  function readEstimateControlNumber(container, inputKey) {
+    if (!(container instanceof HTMLElement)) {
+      return null;
+    }
+    const input = container.querySelector(`[data-quote-input='${inputKey}']`);
+    if (!(input instanceof HTMLInputElement)) {
+      return null;
+    }
+    const value = Number.parseFloat(String(input.value).trim());
+    if (!Number.isFinite(value) || value < 0) {
+      return null;
+    }
+    return value;
+  }
+
+  function syncEstimateRateInputsForAreaType(container, prefix, typeItem) {
+    if (!(container instanceof HTMLElement)) {
+      return;
+    }
+    const materialInput = container.querySelector(`[data-quote-input='${prefix}-materialPerM2']`);
+    const laborInput = container.querySelector(`[data-quote-input='${prefix}-laborPerM2']`);
+    if (materialInput instanceof HTMLInputElement) {
+      materialInput.value = Number.isFinite(typeItem?.materialPerM2) ? typeItem.materialPerM2.toFixed(2) : "0.00";
+    }
+    if (laborInput instanceof HTMLInputElement) {
+      laborInput.value = Number.isFinite(typeItem?.laborPerM2) ? typeItem.laborPerM2.toFixed(2) : "0.00";
+    }
+  }
+
+  function syncEstimateRateInputsForBaseboard(container, profile) {
+    if (!(container instanceof HTMLElement)) {
+      return;
+    }
+    const materialInput = container.querySelector("[data-quote-input='baseboard-materialPerM']");
+    const laborInput = container.querySelector("[data-quote-input='baseboard-laborPerM']");
+    if (materialInput instanceof HTMLInputElement) {
+      materialInput.value = Number.isFinite(profile?.materialPerM) ? profile.materialPerM.toFixed(2) : "0.00";
+    }
+    if (laborInput instanceof HTMLInputElement) {
+      laborInput.value = Number.isFinite(profile?.laborPerM) ? profile.laborPerM.toFixed(2) : "0.00";
+    }
+  }
+
+  function applyAreaTypeRatesFromEstimateControls(options) {
+    const {
+      catalogKey,
+      selectInputKey,
+      materialInputKey,
+      laborInputKey,
+      defaultKey,
+      quote
+    } = options ?? {};
+    if (!controls.estimateBodyElement) {
+      return;
+    }
+    const selectedTypeId = getEstimateSelectValue(controls.estimateBodyElement, selectInputKey);
+    const selectedType = resolveQuoteCatalogItemById(
+      quote?.catalog?.[catalogKey] ?? [],
+      selectedTypeId,
+      quote?.defaults?.[defaultKey]
+    );
+    if (!selectedType) {
+      return;
+    }
+    const materialPerM2 = readEstimateControlNumber(controls.estimateBodyElement, materialInputKey);
+    const laborPerM2 = readEstimateControlNumber(controls.estimateBodyElement, laborInputKey);
+    if (materialPerM2 == null || laborPerM2 == null) {
+      return;
+    }
+    store.dispatch({
+      type: "plan/quote/upsertCatalogItem",
+      catalogKey,
+      item: {
+        ...selectedType,
+        materialPerM2,
+        laborPerM2
+      }
+    });
+    store.dispatch({
+      type: "plan/quote/setDefault",
+      key: defaultKey,
+      value: selectedType.id
+    });
+    syncEditorChrome();
+  }
+
+  function applyUnitPriceFromEstimateControls(quote, catalogKey, defaultKey, inputKey) {
+    if (!controls.estimateBodyElement) {
+      return;
+    }
+    const selectedProduct = resolveQuoteCatalogItemById(
+      quote?.catalog?.[catalogKey] ?? [],
+      quote?.defaults?.[defaultKey],
+      quote?.defaults?.[defaultKey]
+    );
+    if (!selectedProduct) {
+      return;
+    }
+    const unitPrice = readEstimateControlNumber(controls.estimateBodyElement, inputKey);
+    if (unitPrice == null) {
+      return;
+    }
+    store.dispatch({
+      type: "plan/quote/upsertCatalogItem",
+      catalogKey,
+      item: {
+        ...selectedProduct,
+        unitPrice
+      }
+    });
+    store.dispatch({
+      type: "plan/quote/setDefault",
+      key: defaultKey,
+      value: selectedProduct.id
+    });
   }
 
   function activateRoomFromSidebar(roomId, options = {}) {
@@ -2949,133 +3614,35 @@ export function mountEditorRuntime(options) {
 
   function buildEstimatePreviewHtml(plan, baseboard, metersPerWorldUnit) {
     const roomEntries = deriveSidebarRooms(plan);
+    const quote = getQuoteModel(plan);
     const wallHeightMeters = getPlanWallHeightMeters(plan);
+    const breakdowns = roomEntries.map((roomEntry) => deriveRoomEstimateBreakdown(
+      roomEntry,
+      plan,
+      baseboard,
+      metersPerWorldUnit,
+      wallHeightMeters,
+      quote
+    ));
+    const hasScaledCosts = breakdowns.some((breakdown) => breakdown.hasScaledAmount);
+    const grandTotal = breakdowns.reduce(
+      (sum, breakdown) => sum + (Number.isFinite(breakdown.roomTotal) ? breakdown.roomTotal : 0),
+      0
+    );
+    const settingsHtml = buildEstimateSettingsHtml(quote);
     if (roomEntries.length === 0) {
-      return `<div class="estimate-empty">No rooms available for estimate.</div>`;
+      return `${settingsHtml}<div class="estimate-empty">No rooms available for estimate.</div>`;
     }
 
-    let grandTotal = 0;
-    let hasScaledCosts = false;
-    const roomBlocks = roomEntries.map((roomEntry) => {
-      const metrics = computeRoomMetrics(roomEntry, plan, baseboard, metersPerWorldUnit);
-      const painting = deriveRoomPaintingBreakdown(roomEntry, plan, baseboard, metersPerWorldUnit, wallHeightMeters);
-      const roomLighting = computeRoomLightingCounts(roomEntry, plan);
-      const baseboardSegments = deriveRoomBaseboardSegments(roomEntry, baseboard);
-
-      const baseboardQty = metrics.baseboardMeters;
-      const flooringQty = metrics.areaM2;
-      const paintingQty = Number.isFinite(painting.totalAreaM2) ? painting.totalAreaM2 : null;
-      const switchQty = roomLighting.switchCount;
-      const lampQty = roomLighting.lampCount;
-
-      const baseboardAmount = Number.isFinite(baseboardQty)
-        ? baseboardQty * ESTIMATE_DEFAULT_RATES.baseboardPerM
-        : null;
-      const flooringAmount = Number.isFinite(flooringQty)
-        ? flooringQty * ESTIMATE_DEFAULT_RATES.flooringPerM2
-        : null;
-      const paintingAmount = Number.isFinite(paintingQty)
-        ? paintingQty * ESTIMATE_DEFAULT_RATES.paintingPerM2
-        : null;
-      const switchAmount = switchQty * ESTIMATE_DEFAULT_RATES.switchEach;
-      const lampAmount = lampQty * ESTIMATE_DEFAULT_RATES.lampEach;
-
-      const roomTotal = [
-        baseboardAmount,
-        flooringAmount,
-        paintingAmount,
-        switchAmount,
-        lampAmount
-      ].reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
-
-      if (Number.isFinite(baseboardAmount) || Number.isFinite(flooringAmount) || Number.isFinite(paintingAmount)) {
-        hasScaledCosts = true;
-      }
-      grandTotal += roomTotal;
-
-      const visibleBaseboardSegments = baseboardSegments.slice(0, 12);
-      const hiddenBaseboardCount = Math.max(0, baseboardSegments.length - visibleBaseboardSegments.length);
-
-      const baseboardSegmentRows = visibleBaseboardSegments.map((segment, index) => (
-        `<div class="estimate-row estimate-row-indent-2">` +
-        `<span class="estimate-col-label">${escapeHtmlForOverlay(`${index + 1}. ${segment.rectangleId}:${segment.side}`)}</span>` +
-        `<span class="estimate-col-qty">${escapeHtmlForOverlay(formatLengthLabel(segment.lengthWorld, segment.lengthMeters))}</span>` +
-        `<span class="estimate-col-rate">-</span>` +
-        `<span class="estimate-col-amount">-</span>` +
-        `</div>`
-      )).join("");
-      const baseboardHiddenRow = hiddenBaseboardCount > 0
-        ? `<div class="estimate-row estimate-row-indent-2 estimate-row-note"><span class="estimate-col-label">... ${hiddenBaseboardCount} more segments</span><span></span><span></span><span></span></div>`
-        : "";
-
-      return (
-        `<details class="estimate-room-block">` +
-        `<summary class="estimate-row estimate-row-room">` +
-        `<span class="estimate-col-label">${escapeHtmlForOverlay(roomEntry.name)}</span>` +
-        `<span class="estimate-col-qty">${roomEntry.rectangleIds.length} rect${roomEntry.rectangleIds.length === 1 ? "" : "s"}</span>` +
-        `<span class="estimate-col-rate"></span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(roomTotal)}</span>` +
-        `</summary>` +
-        `<div class="estimate-children">` +
-        `<details class="estimate-sub-block">` +
-        `<summary class="estimate-row estimate-row-indent-1">` +
-        `<span class="estimate-col-label">Baseboard</span>` +
-        `<span class="estimate-col-qty">${escapeHtmlForOverlay(Number.isFinite(baseboardQty) ? `${baseboardQty.toFixed(2)} m` : `${metrics.baseboardWorld.toFixed(1)} wu`)}</span>` +
-        `<span class="estimate-col-rate">${escapeHtmlForOverlay(Number.isFinite(baseboardQty) ? formatEstimateRate(ESTIMATE_DEFAULT_RATES.baseboardPerM, "m") : "set scale")}</span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(baseboardAmount)}</span>` +
-        `</summary>` +
-        `<div class="estimate-children">${baseboardSegmentRows}${baseboardHiddenRow}</div>` +
-        `</details>` +
-        `<div class="estimate-row estimate-row-indent-1">` +
-        `<span class="estimate-col-label">Flooring</span>` +
-        `<span class="estimate-col-qty">${escapeHtmlForOverlay(Number.isFinite(flooringQty) ? `${flooringQty.toFixed(2)} m²` : `${metrics.areaWorld.toFixed(1)} wu²`)}</span>` +
-        `<span class="estimate-col-rate">${escapeHtmlForOverlay(Number.isFinite(flooringQty) ? formatEstimateRate(ESTIMATE_DEFAULT_RATES.flooringPerM2, "m²") : "set scale")}</span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(flooringAmount)}</span>` +
-        `</div>` +
-        `<div class="estimate-row estimate-row-indent-1">` +
-        `<span class="estimate-col-label">Painting</span>` +
-        `<span class="estimate-col-qty">${escapeHtmlForOverlay(Number.isFinite(paintingQty) ? `${paintingQty.toFixed(2)} m²` : "set scale")}</span>` +
-        `<span class="estimate-col-rate">${escapeHtmlForOverlay(Number.isFinite(paintingQty) ? formatEstimateRate(ESTIMATE_DEFAULT_RATES.paintingPerM2, "m²") : "set scale")}</span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(paintingAmount)}</span>` +
-        `</div>` +
-        `<details class="estimate-sub-block">` +
-        `<summary class="estimate-row estimate-row-indent-1">` +
-        `<span class="estimate-col-label">Lighting</span>` +
-        `<span class="estimate-col-qty">${roomLighting.switchCount + roomLighting.lampCount} items</span>` +
-        `<span class="estimate-col-rate"></span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(switchAmount + lampAmount)}</span>` +
-        `</summary>` +
-        `<div class="estimate-children">` +
-        `<div class="estimate-row estimate-row-indent-2">` +
-        `<span class="estimate-col-label">Switches</span>` +
-        `<span class="estimate-col-qty">${switchQty} pcs</span>` +
-        `<span class="estimate-col-rate">${formatEstimateRate(ESTIMATE_DEFAULT_RATES.switchEach, "pc")}</span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(switchAmount)}</span>` +
-        `</div>` +
-        `<div class="estimate-row estimate-row-indent-2">` +
-        `<span class="estimate-col-label">Lamps</span>` +
-        `<span class="estimate-col-qty">${lampQty} pcs</span>` +
-        `<span class="estimate-col-rate">${formatEstimateRate(ESTIMATE_DEFAULT_RATES.lampEach, "pc")}</span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(lampAmount)}</span>` +
-        `</div>` +
-        `</div>` +
-        `</details>` +
-        `<div class="estimate-row estimate-row-total">` +
-        `<span class="estimate-col-label">Room Total</span>` +
-        `<span class="estimate-col-qty"></span>` +
-        `<span class="estimate-col-rate"></span>` +
-        `<span class="estimate-col-amount">${formatEstimateCurrency(roomTotal)}</span>` +
-        `</div>` +
-        `</div>` +
-        `</details>`
-      );
-    }).join("");
-
+    const bodyHtml = quote.groupMode === "job"
+      ? buildEstimateByJobHtml(breakdowns)
+      : buildEstimateByRoomHtml(breakdowns);
     const scaleNote = hasScaledCosts
       ? ""
       : `<div class="estimate-note">Scale is not calibrated: baseboard/flooring/painting costs require scale.</div>`;
 
     return (
+      `${settingsHtml}` +
       `<div class="estimate-table">` +
       `<div class="estimate-row estimate-row-header">` +
       `<span class="estimate-col-label">Item</span>` +
@@ -3083,7 +3650,7 @@ export function mountEditorRuntime(options) {
       `<span class="estimate-col-rate">Rate</span>` +
       `<span class="estimate-col-amount">Amount</span>` +
       `</div>` +
-      `${roomBlocks}` +
+      `${bodyHtml}` +
       `<div class="estimate-row estimate-row-grand-total">` +
       `<span class="estimate-col-label">GRAND TOTAL</span>` +
       `<span class="estimate-col-qty"></span>` +
@@ -3095,11 +3662,443 @@ export function mountEditorRuntime(options) {
     );
   }
 
+  function buildEstimateSettingsHtml(quote) {
+    const flooringType = resolveQuoteCatalogItemById(
+      quote.catalog.flooringTypes,
+      quote.defaults.flooringTypeId,
+      quote.defaults.flooringTypeId
+    );
+    const paintingType = resolveQuoteCatalogItemById(
+      quote.catalog.paintingTypes,
+      quote.defaults.paintingTypeId,
+      quote.defaults.paintingTypeId
+    );
+    const baseboardProfile = resolveQuoteCatalogItemById(
+      quote.catalog.baseboardProfiles,
+      quote.defaults.baseboardProfileId,
+      quote.defaults.baseboardProfileId
+    );
+    const switchProduct = resolveQuoteCatalogItemById(
+      quote.catalog.switchProducts,
+      quote.defaults.switchProductId,
+      quote.defaults.switchProductId
+    );
+    const lampProduct = resolveQuoteCatalogItemById(
+      quote.catalog.lampProducts,
+      quote.defaults.lampProductId,
+      quote.defaults.lampProductId
+    );
+    const doorProduct = resolveQuoteCatalogItemById(
+      quote.catalog.doorProducts,
+      quote.defaults.doorProductId,
+      quote.defaults.doorProductId
+    );
+
+    const flooringOptions = quote.catalog.flooringTypes.map((item) => (
+      `<option value="${escapeHtmlForOverlay(item.id)}"${item.id === flooringType?.id ? " selected" : ""}>${escapeHtmlForOverlay(item.name)}</option>`
+    )).join("");
+    const paintingOptions = quote.catalog.paintingTypes.map((item) => (
+      `<option value="${escapeHtmlForOverlay(item.id)}"${item.id === paintingType?.id ? " selected" : ""}>${escapeHtmlForOverlay(item.name)}</option>`
+    )).join("");
+    const baseboardOptions = quote.catalog.baseboardProfiles.map((item) => (
+      `<option value="${escapeHtmlForOverlay(item.id)}"${item.id === baseboardProfile?.id ? " selected" : ""}>${escapeHtmlForOverlay(item.name)}</option>`
+    )).join("");
+
+    return (
+      `<details class="estimate-settings">` +
+      `<summary>Quote Settings</summary>` +
+      `<div class="estimate-settings-body">` +
+      `<div class="estimate-settings-grid">` +
+      `<label>Baseboard Profile<select data-quote-input="baseboardProfileId">${baseboardOptions}</select></label>` +
+      `<label>Baseboard Material / m<input type="number" step="0.01" min="0" data-quote-input="baseboard-materialPerM" value="${Number.isFinite(baseboardProfile?.materialPerM) ? baseboardProfile.materialPerM.toFixed(2) : "0.00"}"></label>` +
+      `<label>Baseboard Work / m<input type="number" step="0.01" min="0" data-quote-input="baseboard-laborPerM" value="${Number.isFinite(baseboardProfile?.laborPerM) ? baseboardProfile.laborPerM.toFixed(2) : "0.00"}"></label>` +
+      `<button type="button" data-quote-action="apply-baseboard-rates">Apply Baseboard Rates</button>` +
+      `<label>Flooring Type<select data-quote-input="flooringTypeId">${flooringOptions}</select></label>` +
+      `<label>Flooring Material / m²<input type="number" step="0.01" min="0" data-quote-input="flooring-materialPerM2" value="${Number.isFinite(flooringType?.materialPerM2) ? flooringType.materialPerM2.toFixed(2) : "0.00"}"></label>` +
+      `<label>Flooring Work / m²<input type="number" step="0.01" min="0" data-quote-input="flooring-laborPerM2" value="${Number.isFinite(flooringType?.laborPerM2) ? flooringType.laborPerM2.toFixed(2) : "0.00"}"></label>` +
+      `<button type="button" data-quote-action="apply-flooring-rates">Apply Flooring Rates</button>` +
+      `<label>New Flooring Type<input type="text" maxlength="64" placeholder="Tiles Premium" data-quote-input="new-flooring-name"></label>` +
+      `<button type="button" data-quote-action="add-flooring-type">Add Flooring Type</button>` +
+      `<label>Painting Type<select data-quote-input="paintingTypeId">${paintingOptions}</select></label>` +
+      `<label>Painting Material / m²<input type="number" step="0.01" min="0" data-quote-input="painting-materialPerM2" value="${Number.isFinite(paintingType?.materialPerM2) ? paintingType.materialPerM2.toFixed(2) : "0.00"}"></label>` +
+      `<label>Painting Work / m²<input type="number" step="0.01" min="0" data-quote-input="painting-laborPerM2" value="${Number.isFinite(paintingType?.laborPerM2) ? paintingType.laborPerM2.toFixed(2) : "0.00"}"></label>` +
+      `<button type="button" data-quote-action="apply-painting-rates">Apply Painting Rates</button>` +
+      `<label>New Painting Type<input type="text" maxlength="64" placeholder="Bathroom Paint" data-quote-input="new-painting-name"></label>` +
+      `<button type="button" data-quote-action="add-painting-type">Add Painting Type</button>` +
+      `<label>Switch Price (default)<input type="number" step="0.01" min="0" data-quote-input="switch-unitPrice" value="${Number.isFinite(switchProduct?.unitPrice) ? switchProduct.unitPrice.toFixed(2) : "0.00"}"></label>` +
+      `<label>Lamp Price (default)<input type="number" step="0.01" min="0" data-quote-input="lamp-unitPrice" value="${Number.isFinite(lampProduct?.unitPrice) ? lampProduct.unitPrice.toFixed(2) : "0.00"}"></label>` +
+      `<label>Door Price (default)<input type="number" step="0.01" min="0" data-quote-input="door-unitPrice" value="${Number.isFinite(doorProduct?.unitPrice) ? doorProduct.unitPrice.toFixed(2) : "0.00"}"></label>` +
+      `<button type="button" data-quote-action="apply-unit-prices">Apply Unit Prices</button>` +
+      `</div>` +
+      `<div class="estimate-note">Windows are fixed as free (qty tracked, amount always ${ESTIMATE_CURRENCY_SYMBOL}0.00).</div>` +
+      `</div>` +
+      `</details>`
+    );
+  }
+
+  function buildEstimateByRoomHtml(breakdowns) {
+    return breakdowns.map((breakdown) => {
+      const roomLabel = escapeHtmlForOverlay(breakdown.roomEntry.name);
+      const rowCountLabel = `${breakdown.roomEntry.rectangleIds.length} rect${breakdown.roomEntry.rectangleIds.length === 1 ? "" : "s"}`;
+      const baseboardRows = breakdown.baseboardSegments.slice(0, 12).map((segment, index) => (
+        `<div class="estimate-row estimate-row-indent-2">` +
+        `<span class="estimate-col-label">${escapeHtmlForOverlay(`${index + 1}. ${segment.rectangleId}:${segment.side}`)}</span>` +
+        `<span class="estimate-col-qty">${escapeHtmlForOverlay(formatLengthLabel(segment.lengthWorld, segment.lengthMeters))}</span>` +
+        `<span class="estimate-col-rate">-</span>` +
+        `<span class="estimate-col-amount">-</span>` +
+        `</div>`
+      )).join("");
+      const hiddenBaseboardCount = Math.max(0, breakdown.baseboardSegments.length - 12);
+      const hiddenBaseboardRow = hiddenBaseboardCount > 0
+        ? `<div class="estimate-row estimate-row-indent-2 estimate-row-note"><span class="estimate-col-label">... ${hiddenBaseboardCount} more segments</span><span></span><span></span><span></span></div>`
+        : "";
+      const lightingRows = breakdown.lightingRows.map((row) => buildEstimateRowHtml(row, "estimate-row-indent-2")).join("");
+      const doorRows = breakdown.doorRows.map((row) => buildEstimateRowHtml(row, "estimate-row-indent-2")).join("");
+      const windowRow = buildEstimateRowHtml(breakdown.windowRow, "estimate-row-indent-2");
+
+      return (
+        `<details class="estimate-room-block">` +
+        `<summary class="estimate-row estimate-row-room">` +
+        `<span class="estimate-col-label">${roomLabel}</span>` +
+        `<span class="estimate-col-qty">${rowCountLabel}</span>` +
+        `<span class="estimate-col-rate"></span>` +
+        `<span class="estimate-col-amount">${formatEstimateCurrency(breakdown.roomTotal)}</span>` +
+        `</summary>` +
+        `<div class="estimate-children">` +
+        `<details class="estimate-sub-block">` +
+        `<summary>${buildEstimateRowHtml(breakdown.baseboardRow, "estimate-row estimate-row-indent-1", true)}</summary>` +
+        `<div class="estimate-children">${baseboardRows}${hiddenBaseboardRow}</div>` +
+        `</details>` +
+        `${buildEstimateRowHtml(breakdown.flooringRow, "estimate-row estimate-row-indent-1")}` +
+        `${buildEstimateRowHtml(breakdown.paintingRow, "estimate-row estimate-row-indent-1")}` +
+        `<details class="estimate-sub-block">` +
+        `<summary>${buildEstimateRowHtml(breakdown.lightingSummaryRow, "estimate-row estimate-row-indent-1", true)}</summary>` +
+        `<div class="estimate-children">${lightingRows || `<div class="estimate-row estimate-row-indent-2 estimate-row-note"><span class="estimate-col-label">No lighting fixtures in this room.</span><span></span><span></span><span></span></div>`}</div>` +
+        `</details>` +
+        `<details class="estimate-sub-block">` +
+        `<summary>${buildEstimateRowHtml(breakdown.openingsSummaryRow, "estimate-row estimate-row-indent-1", true)}</summary>` +
+        `<div class="estimate-children">${doorRows || `<div class="estimate-row estimate-row-indent-2 estimate-row-note"><span class="estimate-col-label">No doors in this room.</span><span></span><span></span><span></span></div>`}${windowRow}</div>` +
+        `</details>` +
+        `<div class="estimate-row estimate-row-total">` +
+        `<span class="estimate-col-label">Room Total</span>` +
+        `<span class="estimate-col-qty"></span>` +
+        `<span class="estimate-col-rate"></span>` +
+        `<span class="estimate-col-amount">${formatEstimateCurrency(breakdown.roomTotal)}</span>` +
+        `</div>` +
+        `</div>` +
+        `</details>`
+      );
+    }).join("");
+  }
+
+  function buildEstimateByJobHtml(breakdowns) {
+    const groups = [
+      { key: "baseboardRow", label: "Baseboard" },
+      { key: "flooringRow", label: "Flooring" },
+      { key: "paintingRow", label: "Painting" },
+      { key: "lightingSummaryRow", label: "Lighting" },
+      { key: "openingsSummaryRow", label: "Openings" }
+    ];
+    return groups.map((group) => {
+      const rows = breakdowns.map((breakdown) => ({
+        ...breakdown[group.key],
+        label: `${breakdown.roomEntry.name} — ${breakdown[group.key].label}`
+      }));
+      const total = rows.reduce((sum, row) => sum + (Number.isFinite(row.amount) ? row.amount : 0), 0);
+      const childRows = rows.map((row) => buildEstimateRowHtml(row, "estimate-row estimate-row-indent-1")).join("");
+      return (
+        `<details class="estimate-room-block">` +
+        `<summary class="estimate-row estimate-row-room">` +
+        `<span class="estimate-col-label">${escapeHtmlForOverlay(group.label)}</span>` +
+        `<span class="estimate-col-qty">${rows.length} room${rows.length === 1 ? "" : "s"}</span>` +
+        `<span class="estimate-col-rate"></span>` +
+        `<span class="estimate-col-amount">${formatEstimateCurrency(total)}</span>` +
+        `</summary>` +
+        `<div class="estimate-children">${childRows}</div>` +
+        `</details>`
+      );
+    }).join("");
+  }
+
+  function deriveRoomEstimateBreakdown(roomEntry, plan, baseboard, metersPerWorldUnit, wallHeightMeters, quote) {
+    const metrics = computeRoomMetrics(roomEntry, plan, baseboard, metersPerWorldUnit);
+    const painting = deriveRoomPaintingBreakdown(roomEntry, plan, baseboard, metersPerWorldUnit, wallHeightMeters);
+    const roomConfig = getRoomQuoteConfig(quote, roomEntry.id);
+    const baseboardProfile = resolveQuoteCatalogItemById(
+      quote.catalog.baseboardProfiles,
+      roomConfig.baseboardProfileId,
+      quote.defaults.baseboardProfileId
+    );
+    const flooringType = resolveQuoteCatalogItemById(
+      quote.catalog.flooringTypes,
+      roomConfig.flooringTypeId,
+      quote.defaults.flooringTypeId
+    );
+    const paintingType = resolveQuoteCatalogItemById(
+      quote.catalog.paintingTypes,
+      roomConfig.paintingTypeId,
+      quote.defaults.paintingTypeId
+    );
+    const baseboardSegments = deriveRoomBaseboardSegments(roomEntry, baseboard);
+    const baseboardQty = metrics.baseboardMeters;
+    const flooringQty = metrics.areaM2;
+    const paintingQty = Number.isFinite(painting.totalAreaM2) ? painting.totalAreaM2 : null;
+
+    const baseboardRate = Number.isFinite(baseboardProfile?.materialPerM) && Number.isFinite(baseboardProfile?.laborPerM)
+      ? baseboardProfile.materialPerM + baseboardProfile.laborPerM
+      : null;
+    const flooringRate = Number.isFinite(flooringType?.materialPerM2) && Number.isFinite(flooringType?.laborPerM2)
+      ? flooringType.materialPerM2 + flooringType.laborPerM2
+      : null;
+    const paintingRate = Number.isFinite(paintingType?.materialPerM2) && Number.isFinite(paintingType?.laborPerM2)
+      ? paintingType.materialPerM2 + paintingType.laborPerM2
+      : null;
+
+    const baseboardAmount = roomConfig.includeBaseboard
+      ? (Number.isFinite(baseboardQty) && Number.isFinite(baseboardRate) ? baseboardQty * baseboardRate : null)
+      : 0;
+    const flooringAmount = Number.isFinite(flooringQty) && Number.isFinite(flooringRate)
+      ? flooringQty * flooringRate
+      : null;
+    const paintingAmount = Number.isFinite(paintingQty) && Number.isFinite(paintingRate)
+      ? paintingQty * paintingRate
+      : null;
+
+    const lightingSummary = deriveRoomLightingQuoteSummary(roomEntry, plan, quote);
+    const openingSummary = deriveRoomOpeningQuoteSummary(roomEntry, plan, quote);
+    const roomTotal = [
+      baseboardAmount,
+      flooringAmount,
+      paintingAmount,
+      lightingSummary.totalAmount,
+      openingSummary.totalAmount
+    ].reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+
+    return {
+      roomEntry,
+      hasScaledAmount: Number.isFinite(baseboardAmount) || Number.isFinite(flooringAmount) || Number.isFinite(paintingAmount),
+      roomTotal,
+      baseboardSegments,
+      baseboardRow: {
+        label: `Baseboard${roomConfig.includeBaseboard ? "" : " (excluded for quote)"}`,
+        qtyLabel: Number.isFinite(baseboardQty) ? `${baseboardQty.toFixed(2)} m` : `${metrics.baseboardWorld.toFixed(1)} wu`,
+        rateLabel: roomConfig.includeBaseboard
+          ? (Number.isFinite(baseboardRate) ? formatEstimateRate(baseboardRate, "m") : "set scale")
+          : "excluded",
+        amount: baseboardAmount
+      },
+      flooringRow: {
+        label: `Flooring (${flooringType?.name ?? "type"})`,
+        qtyLabel: Number.isFinite(flooringQty) ? `${flooringQty.toFixed(2)} m²` : `${metrics.areaWorld.toFixed(1)} wu²`,
+        rateLabel: Number.isFinite(flooringRate) ? formatEstimateRate(flooringRate, "m²") : "set scale",
+        amount: flooringAmount
+      },
+      paintingRow: {
+        label: `Painting (${paintingType?.name ?? "type"})`,
+        qtyLabel: Number.isFinite(paintingQty) ? `${paintingQty.toFixed(2)} m²` : "set scale",
+        rateLabel: Number.isFinite(paintingRate) ? formatEstimateRate(paintingRate, "m²") : "set scale",
+        amount: paintingAmount
+      },
+      lightingSummaryRow: {
+        label: "Lighting",
+        qtyLabel: `${lightingSummary.itemCount} items`,
+        rateLabel: "catalog",
+        amount: lightingSummary.totalAmount
+      },
+      openingsSummaryRow: {
+        label: "Openings",
+        qtyLabel: `${openingSummary.doorCount + openingSummary.windowCount} items`,
+        rateLabel: "doors + windows free",
+        amount: openingSummary.totalAmount
+      },
+      lightingRows: lightingSummary.rows,
+      doorRows: openingSummary.doorRows,
+      windowRow: openingSummary.windowRow
+    };
+  }
+
+  function deriveRoomLightingQuoteSummary(roomEntry, plan, quote) {
+    const membership = deriveRoomLightingMembership(roomEntry, plan);
+    const rows = [];
+    let totalAmount = 0;
+    let itemCount = 0;
+    const switchCounts = new Map();
+    const lampCounts = new Map();
+    for (const switchId of membership.switchIdsInRoom) {
+      const fixture = membership.fixtureById.get(switchId);
+      if (!fixture) {
+        continue;
+      }
+      const product = resolveQuoteCatalogItemById(
+        quote.catalog.switchProducts,
+        fixture.productId,
+        quote.defaults.switchProductId
+      );
+      const productId = product?.id ?? "switch_none";
+      const current = switchCounts.get(productId) ?? {
+        product,
+        count: 0
+      };
+      current.count += 1;
+      switchCounts.set(productId, current);
+      itemCount += 1;
+    }
+    for (const lampId of membership.lampIdsInRoom) {
+      const fixture = membership.fixtureById.get(lampId);
+      if (!fixture) {
+        continue;
+      }
+      const product = resolveQuoteCatalogItemById(
+        quote.catalog.lampProducts,
+        fixture.productId,
+        quote.defaults.lampProductId
+      );
+      const productId = product?.id ?? "lamp_none";
+      const current = lampCounts.get(productId) ?? {
+        product,
+        count: 0
+      };
+      current.count += 1;
+      lampCounts.set(productId, current);
+      itemCount += 1;
+    }
+
+    for (const row of switchCounts.values()) {
+      const unitPrice = Number.isFinite(row.product?.unitPrice) ? row.product.unitPrice : 0;
+      const amount = row.count * unitPrice;
+      totalAmount += amount;
+      rows.push({
+        label: `Switches (${row.product?.name ?? "unassigned"})`,
+        qtyLabel: `${row.count} pcs`,
+        rateLabel: formatEstimateRate(unitPrice, "pc"),
+        amount
+      });
+    }
+    for (const row of lampCounts.values()) {
+      const unitPrice = Number.isFinite(row.product?.unitPrice) ? row.product.unitPrice : 0;
+      const amount = row.count * unitPrice;
+      totalAmount += amount;
+      rows.push({
+        label: `Lamps (${row.product?.name ?? "unassigned"})`,
+        qtyLabel: `${row.count} pcs`,
+        rateLabel: formatEstimateRate(unitPrice, "pc"),
+        amount
+      });
+    }
+
+    rows.sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" }));
+    return {
+      rows,
+      totalAmount,
+      itemCount
+    };
+  }
+
+  function deriveRoomOpeningQuoteSummary(roomEntry, plan, quote) {
+    const roomRectangleIdSet = new Set(
+      Array.isArray(roomEntry?.rectangleIds)
+        ? roomEntry.rectangleIds.filter((rectangleId) => typeof rectangleId === "string" && rectangleId)
+        : []
+    );
+    const openings = Array.isArray(plan?.entities?.openings) ? plan.entities.openings : [];
+    const doorCounts = new Map();
+    let windowCount = 0;
+    for (const opening of openings) {
+      const hostRectangleId = normalizeRectangleIdForUi(opening?.host?.rectangleId);
+      if (!hostRectangleId || !roomRectangleIdSet.has(hostRectangleId)) {
+        continue;
+      }
+      if (opening?.kind === "window") {
+        windowCount += 1;
+        continue;
+      }
+      if (opening?.kind !== "door") {
+        continue;
+      }
+      const product = resolveQuoteCatalogItemById(
+        quote.catalog.doorProducts,
+        opening.productId,
+        quote.defaults.doorProductId
+      );
+      const productId = product?.id ?? "door_none";
+      const current = doorCounts.get(productId) ?? {
+        product,
+        count: 0
+      };
+      current.count += 1;
+      doorCounts.set(productId, current);
+    }
+    const doorRows = [];
+    let totalAmount = 0;
+    let doorCount = 0;
+    for (const row of doorCounts.values()) {
+      doorCount += row.count;
+      const unitPrice = Number.isFinite(row.product?.unitPrice) ? row.product.unitPrice : 0;
+      const amount = row.count * unitPrice;
+      totalAmount += amount;
+      doorRows.push({
+        label: `Doors (${row.product?.name ?? "unassigned"})`,
+        qtyLabel: `${row.count} pcs`,
+        rateLabel: formatEstimateRate(unitPrice, "pc"),
+        amount
+      });
+    }
+    const windowRow = {
+      label: "Windows (free)",
+      qtyLabel: `${windowCount} pcs`,
+      rateLabel: formatEstimateRate(0, "pc"),
+      amount: 0
+    };
+    return {
+      doorRows,
+      doorCount,
+      windowCount,
+      windowRow,
+      totalAmount
+    };
+  }
+
+  function buildEstimateRowHtml(row, className = "estimate-row", wrap = false) {
+    const rendered = (
+      `<div class="${className}">` +
+      `<span class="estimate-col-label">${escapeHtmlForOverlay(row?.label ?? "")}</span>` +
+      `<span class="estimate-col-qty">${escapeHtmlForOverlay(row?.qtyLabel ?? "")}</span>` +
+      `<span class="estimate-col-rate">${escapeHtmlForOverlay(row?.rateLabel ?? "")}</span>` +
+      `<span class="estimate-col-amount">${formatEstimateCurrency(row?.amount)}</span>` +
+      `</div>`
+    );
+    return wrap ? rendered : rendered;
+  }
+
   function buildRoomInventoryDetailsHtml(activeRoom, plan, baseboard, metersPerWorldUnit) {
     const metrics = computeRoomMetrics(activeRoom, plan, baseboard, metersPerWorldUnit);
     const wallHeightMeters = getPlanWallHeightMeters(plan);
     const roomLighting = computeRoomLightingCounts(activeRoom, plan);
     const electricity = deriveRoomElectricityInventory(activeRoom, plan);
+    const quote = getQuoteModel(plan);
+    const roomQuote = getRoomQuoteConfig(quote, activeRoom.id);
+    const flooringType = resolveQuoteCatalogItemById(
+      quote.catalog.flooringTypes,
+      roomQuote.flooringTypeId,
+      quote.defaults.flooringTypeId
+    );
+    const paintingType = resolveQuoteCatalogItemById(
+      quote.catalog.paintingTypes,
+      roomQuote.paintingTypeId,
+      quote.defaults.paintingTypeId
+    );
+    const flooringOptionsHtml = quote.catalog.flooringTypes.map((item) => (
+      `<option value="${escapeHtmlForOverlay(item.id)}"${item.id === flooringType?.id ? " selected" : ""}>${escapeHtmlForOverlay(item.name)}</option>`
+    )).join("");
+    const paintingOptionsHtml = quote.catalog.paintingTypes.map((item) => (
+      `<option value="${escapeHtmlForOverlay(item.id)}"${item.id === paintingType?.id ? " selected" : ""}>${escapeHtmlForOverlay(item.name)}</option>`
+    )).join("");
+    const flooringRate = Number.isFinite(flooringType?.materialPerM2) && Number.isFinite(flooringType?.laborPerM2)
+      ? flooringType.materialPerM2 + flooringType.laborPerM2
+      : null;
+    const paintingRate = Number.isFinite(paintingType?.materialPerM2) && Number.isFinite(paintingType?.laborPerM2)
+      ? paintingType.materialPerM2 + paintingType.laborPerM2
+      : null;
     const painting = deriveRoomPaintingBreakdown(
       activeRoom,
       plan,
@@ -3153,21 +4152,40 @@ export function mountEditorRuntime(options) {
       integrityNotes.push(`${electricity.orphanLampIds.length} lamp${electricity.orphanLampIds.length === 1 ? "" : "s"} without switch control`);
     }
     const integrityLabel = integrityNotes.length > 0 ? integrityNotes.join(" • ") : "No obvious lighting link gaps";
+    const roomQuoteFieldRoomId = escapeHtmlForOverlay(activeRoom.id);
+    const includeBaseboardChecked = roomQuote.includeBaseboard ? " checked" : "";
 
     return (
       `<div class="room-tree-meta">` +
       `ID ${escapeHtmlForOverlay(displayId)} • Type ${escapeHtmlForOverlay(displayType)} • Rectangles ${activeRoom.rectangleIds.length} • Subtypes ${escapeHtmlForOverlay(formatLightingSubtypeCounts(roomLighting.subtypeCounts) || "none")}` +
       `</div>` +
       `<details class="room-package">` +
+      `<summary>Quote Settings — flooring ${escapeHtmlForOverlay(flooringType?.name ?? "n/a")} • painting ${escapeHtmlForOverlay(paintingType?.name ?? "n/a")} • baseboard ${roomQuote.includeBaseboard ? "on" : "off"}</summary>` +
+      `<div class="room-package-body room-quote-controls">` +
+      `<label class="room-inline-field">` +
+      `<input type="checkbox" data-room-quote-room-id="${roomQuoteFieldRoomId}" data-room-quote-field="includeBaseboard"${includeBaseboardChecked}>` +
+      `<span>Include baseboard in quote</span>` +
+      `</label>` +
+      `<label class="room-inline-field">` +
+      `<span>Flooring type</span>` +
+      `<select data-room-quote-room-id="${roomQuoteFieldRoomId}" data-room-quote-field="flooringTypeId">${flooringOptionsHtml}</select>` +
+      `</label>` +
+      `<label class="room-inline-field">` +
+      `<span>Painting type</span>` +
+      `<select data-room-quote-room-id="${roomQuoteFieldRoomId}" data-room-quote-field="paintingTypeId">${paintingOptionsHtml}</select>` +
+      `</label>` +
+      `</div>` +
+      `</details>` +
+      `<details class="room-package">` +
       `<summary>Baseboard — ${escapeHtmlForOverlay(metrics.baseboardLabel)} (${baseboardSegments.length} seg)</summary>` +
-      `<div class="room-package-body"><ol class="room-lines">${baseboardRowsHtml}</ol></div>` +
+      `<div class="room-package-body"><div class="room-inline-note">Quote: ${roomQuote.includeBaseboard ? "included" : "excluded"}.</div><ol class="room-lines">${baseboardRowsHtml}</ol></div>` +
       `</details>` +
       `<details class="room-package">` +
-      `<summary>Flooring — ${escapeHtmlForOverlay(metrics.areaLabel)}</summary>` +
-      `<div class="room-package-body">Floor material: <em>unset (v1 placeholder)</em>.</div>` +
+      `<summary>Flooring — ${escapeHtmlForOverlay(metrics.areaLabel)} (${escapeHtmlForOverlay(flooringType?.name ?? "n/a")})</summary>` +
+      `<div class="room-package-body">Rate: ${Number.isFinite(flooringRate) ? formatEstimateRate(flooringRate, "m²") : "n/a"} (material + work).</div>` +
       `</details>` +
       `<details class="room-package">` +
-      `<summary>Painting — ${formatAreaLabel(painting.totalAreaM2)} (h=${painting.wallHeightMeters.toFixed(2)}m${Number.isFinite(painting.totalOpeningAreaM2) && painting.totalOpeningAreaM2 > 0 ? `, openings -${painting.totalOpeningAreaM2.toFixed(2)} m²` : ""})</summary>` +
+      `<summary>Painting — ${formatAreaLabel(painting.totalAreaM2)} (${escapeHtmlForOverlay(paintingType?.name ?? "n/a")}) (h=${painting.wallHeightMeters.toFixed(2)}m${Number.isFinite(painting.totalOpeningAreaM2) && painting.totalOpeningAreaM2 > 0 ? `, openings -${painting.totalOpeningAreaM2.toFixed(2)} m²` : ""})</summary>` +
       `<div class="room-package-body">${paintingWarningHtml}<ol class="room-lines">${paintingRowsHtml}</ol></div>` +
       `</details>` +
       `<details class="room-package">` +
@@ -4177,6 +5195,157 @@ function formatLightingSubtypeCounts(subtypeCounts) {
   return entries.map(([subtype, count]) => `${subtype}:${count}`).join(", ");
 }
 
+function createDefaultQuoteModelForRuntime() {
+  return {
+    groupMode: DEFAULT_QUOTE_MODEL.groupMode,
+    catalog: {
+      baseboardProfiles: DEFAULT_QUOTE_MODEL.catalog.baseboardProfiles.map((item) => ({ ...item })),
+      flooringTypes: DEFAULT_QUOTE_MODEL.catalog.flooringTypes.map((item) => ({ ...item })),
+      paintingTypes: DEFAULT_QUOTE_MODEL.catalog.paintingTypes.map((item) => ({ ...item })),
+      switchProducts: DEFAULT_QUOTE_MODEL.catalog.switchProducts.map((item) => ({ ...item })),
+      lampProducts: DEFAULT_QUOTE_MODEL.catalog.lampProducts.map((item) => ({ ...item })),
+      doorProducts: DEFAULT_QUOTE_MODEL.catalog.doorProducts.map((item) => ({ ...item }))
+    },
+    defaults: { ...DEFAULT_QUOTE_MODEL.defaults },
+    roomConfigs: {}
+  };
+}
+
+function getQuoteModel(plan) {
+  const defaults = createDefaultQuoteModelForRuntime();
+  const rawQuote = isPlainObjectValue(plan?.quote) ? plan.quote : {};
+  const rawCatalog = isPlainObjectValue(rawQuote.catalog) ? rawQuote.catalog : {};
+  const rawDefaults = isPlainObjectValue(rawQuote.defaults) ? rawQuote.defaults : {};
+  const rawRoomConfigs = isPlainObjectValue(rawQuote.roomConfigs) ? rawQuote.roomConfigs : {};
+  const quote = {
+    groupMode: rawQuote.groupMode === "job" ? "job" : "room",
+    catalog: {
+      baseboardProfiles: normalizeQuoteCatalogListRuntime(rawCatalog.baseboardProfiles, defaults.catalog.baseboardProfiles, "baseboard"),
+      flooringTypes: normalizeQuoteCatalogListRuntime(rawCatalog.flooringTypes, defaults.catalog.flooringTypes, "area"),
+      paintingTypes: normalizeQuoteCatalogListRuntime(rawCatalog.paintingTypes, defaults.catalog.paintingTypes, "area"),
+      switchProducts: normalizeQuoteCatalogListRuntime(rawCatalog.switchProducts, defaults.catalog.switchProducts, "unit"),
+      lampProducts: normalizeQuoteCatalogListRuntime(rawCatalog.lampProducts, defaults.catalog.lampProducts, "unit"),
+      doorProducts: normalizeQuoteCatalogListRuntime(rawCatalog.doorProducts, defaults.catalog.doorProducts, "unit")
+    },
+    defaults: {
+      baseboardProfileId: normalizeRectangleIdForUi(rawDefaults.baseboardProfileId) ?? defaults.defaults.baseboardProfileId,
+      flooringTypeId: normalizeRectangleIdForUi(rawDefaults.flooringTypeId) ?? defaults.defaults.flooringTypeId,
+      paintingTypeId: normalizeRectangleIdForUi(rawDefaults.paintingTypeId) ?? defaults.defaults.paintingTypeId,
+      switchProductId: normalizeRectangleIdForUi(rawDefaults.switchProductId) ?? defaults.defaults.switchProductId,
+      lampProductId: normalizeRectangleIdForUi(rawDefaults.lampProductId) ?? defaults.defaults.lampProductId,
+      doorProductId: normalizeRectangleIdForUi(rawDefaults.doorProductId) ?? defaults.defaults.doorProductId
+    },
+    roomConfigs: {}
+  };
+
+  for (const [roomEntryId, rawConfig] of Object.entries(rawRoomConfigs)) {
+    const normalizedRoomEntryId = normalizeRectangleIdForUi(roomEntryId);
+    if (!normalizedRoomEntryId || !isPlainObjectValue(rawConfig)) {
+      continue;
+    }
+    quote.roomConfigs[normalizedRoomEntryId] = {
+      includeBaseboard: rawConfig.includeBaseboard !== false,
+      flooringTypeId: normalizeRectangleIdForUi(rawConfig.flooringTypeId) ?? quote.defaults.flooringTypeId,
+      paintingTypeId: normalizeRectangleIdForUi(rawConfig.paintingTypeId) ?? quote.defaults.paintingTypeId,
+      baseboardProfileId: normalizeRectangleIdForUi(rawConfig.baseboardProfileId) ?? quote.defaults.baseboardProfileId
+    };
+  }
+  return quote;
+}
+
+function normalizeQuoteCatalogListRuntime(rawList, fallbackList, mode) {
+  const source = Array.isArray(rawList) ? rawList : fallbackList;
+  const normalized = [];
+  for (const item of source) {
+    if (!isPlainObjectValue(item)) {
+      continue;
+    }
+    const id = normalizeRectangleIdForUi(item.id);
+    const name = normalizeRectangleIdForUi(item.name) ?? (typeof item.name === "string" ? item.name.trim() : null);
+    if (!id || !name || normalized.some((candidate) => candidate.id === id)) {
+      continue;
+    }
+    if (mode === "baseboard") {
+      normalized.push({
+        id,
+        name,
+        materialPerM: Number.isFinite(item.materialPerM) ? Math.max(0, item.materialPerM) : 0,
+        laborPerM: Number.isFinite(item.laborPerM) ? Math.max(0, item.laborPerM) : 0
+      });
+      continue;
+    }
+    if (mode === "area") {
+      normalized.push({
+        id,
+        name,
+        materialPerM2: Number.isFinite(item.materialPerM2) ? Math.max(0, item.materialPerM2) : 0,
+        laborPerM2: Number.isFinite(item.laborPerM2) ? Math.max(0, item.laborPerM2) : 0
+      });
+      continue;
+    }
+    normalized.push({
+      id,
+      name,
+      unitPrice: Number.isFinite(item.unitPrice) ? Math.max(0, item.unitPrice) : 0
+    });
+  }
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return Array.isArray(fallbackList) ? fallbackList.map((item) => ({ ...item })) : [];
+}
+
+function resolveQuoteCatalogItemById(list, requestedId, fallbackId = null) {
+  const items = Array.isArray(list) ? list : [];
+  const requested = normalizeRectangleIdForUi(requestedId);
+  if (requested) {
+    const item = items.find((candidate) => candidate.id === requested);
+    if (item) {
+      return item;
+    }
+  }
+  const fallback = normalizeRectangleIdForUi(fallbackId);
+  if (fallback) {
+    const item = items.find((candidate) => candidate.id === fallback);
+    if (item) {
+      return item;
+    }
+  }
+  return items[0] ?? null;
+}
+
+function getRoomQuoteConfig(quote, roomEntryId) {
+  const normalizedRoomEntryId = normalizeRectangleIdForUi(roomEntryId);
+  const rawConfig = normalizedRoomEntryId ? quote?.roomConfigs?.[normalizedRoomEntryId] : null;
+  return {
+    includeBaseboard: rawConfig?.includeBaseboard !== false,
+    flooringTypeId: normalizeRectangleIdForUi(rawConfig?.flooringTypeId) ?? quote?.defaults?.flooringTypeId,
+    paintingTypeId: normalizeRectangleIdForUi(rawConfig?.paintingTypeId) ?? quote?.defaults?.paintingTypeId,
+    baseboardProfileId: normalizeRectangleIdForUi(rawConfig?.baseboardProfileId) ?? quote?.defaults?.baseboardProfileId
+  };
+}
+
+function generateQuoteCatalogId(prefix, name, existingItems) {
+  const slug = String(name)
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replaceAll(/_+/g, "_");
+  const baseId = `${prefix}_${slug || "custom"}`;
+  const existingIds = new Set(
+    Array.isArray(existingItems) ? existingItems.map((item) => item?.id).filter(Boolean) : []
+  );
+  if (!existingIds.has(baseId)) {
+    return baseId;
+  }
+  let suffix = 2;
+  while (existingIds.has(`${baseId}_${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseId}_${suffix}`;
+}
+
 function buildPlanExportPayload(plan, options = {}) {
   const derivedLighting = deriveLightingSnapshot(plan);
   const derivedBaseboards = deriveBaseboardExportSnapshot(
@@ -5046,10 +6215,13 @@ function hashString(value) {
   return hash;
 }
 
-function normalizeRectangleGeometryUpdates(rectangles, updates) {
+function normalizeRectangleGeometryUpdates(rectangles, updates, options = {}) {
   if (!Array.isArray(rectangles) || !Array.isArray(updates) || updates.length === 0) {
     return [];
   }
+  const quantizationWorld = Number.isFinite(options.quantizationWorld) && options.quantizationWorld > 0
+    ? options.quantizationWorld
+    : null;
   const rectangleById = new Map(rectangles.map((rectangle) => [rectangle.id, rectangle]));
   const normalized = [];
   for (const update of updates) {
@@ -5071,12 +6243,21 @@ function normalizeRectangleGeometryUpdates(rectangles, updates) {
     ) {
       continue;
     }
-    normalized.push({
-      id: rectangleId,
+    const geometry = quantizeRectangleGeometry({
       x: update.x,
       y: update.y,
       w: update.w,
       h: update.h
+    }, quantizationWorld);
+    if (!Number.isFinite(geometry.w) || !Number.isFinite(geometry.h) || geometry.w <= 0 || geometry.h <= 0) {
+      continue;
+    }
+    normalized.push({
+      id: rectangleId,
+      x: geometry.x,
+      y: geometry.y,
+      w: geometry.w,
+      h: geometry.h
     });
   }
   return normalized;
@@ -5142,6 +6323,65 @@ function roomsConnectedAfterGeometryUpdates(plan, nextRectangles, updates) {
     }
   }
   return true;
+}
+
+function hasPointerExceededDeadzone(dxScreen, dyScreen, deadzonePx) {
+  if (!Number.isFinite(dxScreen) || !Number.isFinite(dyScreen)) {
+    return false;
+  }
+  const threshold = Number.isFinite(deadzonePx) && deadzonePx > 0 ? deadzonePx : 0;
+  return Math.hypot(dxScreen, dyScreen) >= threshold;
+}
+
+function getDragQuantizationWorld(metersPerWorldUnit) {
+  if (!Number.isFinite(metersPerWorldUnit) || metersPerWorldUnit <= 0) {
+    return DEFAULT_DRAG_QUANTIZATION_WORLD;
+  }
+  const quantization = METRIC_DRAG_QUANTIZATION_STEP_METERS / metersPerWorldUnit;
+  return Number.isFinite(quantization) && quantization > 0
+    ? quantization
+    : DEFAULT_DRAG_QUANTIZATION_WORLD;
+}
+
+function quantizeAroundAnchor(value, anchor, step) {
+  if (!Number.isFinite(value) || !Number.isFinite(anchor) || !Number.isFinite(step) || step <= 0) {
+    return value;
+  }
+  return roundWorldPrecision(anchor + Math.round((value - anchor) / step) * step);
+}
+
+function quantizeWorldValue(value, step) {
+  if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) {
+    return value;
+  }
+  return roundWorldPrecision(Math.round(value / step) * step);
+}
+
+function quantizeRectangleGeometry(rectangle, quantizationWorld) {
+  if (!rectangle || typeof rectangle !== "object") {
+    return rectangle;
+  }
+  if (!Number.isFinite(quantizationWorld) || quantizationWorld <= 0) {
+    return {
+      x: roundWorldPrecision(rectangle.x),
+      y: roundWorldPrecision(rectangle.y),
+      w: roundWorldPrecision(rectangle.w),
+      h: roundWorldPrecision(rectangle.h)
+    };
+  }
+  return {
+    x: quantizeWorldValue(rectangle.x, quantizationWorld),
+    y: quantizeWorldValue(rectangle.y, quantizationWorld),
+    w: quantizeWorldValue(rectangle.w, quantizationWorld),
+    h: quantizeWorldValue(rectangle.h, quantizationWorld)
+  };
+}
+
+function roundWorldPrecision(value) {
+  if (!Number.isFinite(value)) {
+    return value;
+  }
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 function normalizeRectangleIdForUi(rectangleId) {
@@ -5902,6 +7142,14 @@ function deriveRoomEntryIdForRectangle(rectangle) {
   return rectangleId ? `rect:${rectangleId}` : "rect:unknown";
 }
 
+function getPlanViewState(plan) {
+  const rawView = plan?.view;
+  return {
+    roomHighlighting: rawView?.roomHighlighting !== false,
+    wallsBlack: Boolean(rawView?.wallsBlack)
+  };
+}
+
 function isBaseboardOverlayEnabled(editorState) {
   return Boolean(editorState?.debug?.showBaseboardOverlay);
 }
@@ -5932,6 +7180,9 @@ function drawDebugRectangles(
     includeWallShell: true
   });
   const hasActiveRoom = typeof activeRoomId === "string" && activeRoomId;
+  const planView = getPlanViewState(plan);
+  const roomHighlighting = planView.roomHighlighting;
+  const wallsBlack = planView.wallsBlack;
   const selectedRectangle = plan.entities.rectangles.find((rectangle) => rectangle.id === selectedRectangleId) ?? null;
   const selectedRoomEntryId = selectedRectangle?.kind !== "wallRect"
     ? deriveRoomEntryIdForRectangle(selectedRectangle)
@@ -5951,10 +7202,16 @@ function drawDebugRectangles(
     const roomFill = roomEntryId ? roomColor(roomEntryId, 0.18) : null;
     const isActiveRoomMember = !isWall && hasActiveRoom && roomEntryId === activeRoomId;
     const isNonActiveRoomMember = !isWall && hasActiveRoom && roomEntryId && roomEntryId !== activeRoomId;
-    const stroke = isWall ? "#222" : (roomStroke ?? "#0b6e4f");
+    const wallStroke = wallsBlack ? "#000" : "#222";
+    const wallFill = wallsBlack ? "rgba(0,0,0,0.82)" : "rgba(20,20,20,0.20)";
+    const neutralRoomStroke = "rgba(88, 88, 88, 0.94)";
+    const neutralRoomFill = "rgba(255,255,255,0.96)";
+    const stroke = isWall
+      ? wallStroke
+      : (roomHighlighting ? (roomStroke ?? "#0b6e4f") : neutralRoomStroke);
     const fill = isWall
-      ? "rgba(20,20,20,0.20)"
-      : (roomFill ?? "rgba(11,110,79,0.14)");
+      ? wallFill
+      : (roomHighlighting ? (roomFill ?? "rgba(11,110,79,0.14)") : neutralRoomFill);
     const isSelected = rect.id === selectedRectangleId;
     const isSelectedGroupMember = !isWall && selectedGroupRectangleIds.has(rect.id);
     const shell = deriveRectangleShellGeometry(rect, metersPerWorldUnit);
@@ -5978,14 +7235,14 @@ function drawDebugRectangles(
 
     ctx.save();
     if (wallBands && !isWall) {
-      ctx.fillStyle = "rgba(15, 42, 34, 0.22)";
+      ctx.fillStyle = wallsBlack ? "rgba(0,0,0,0.72)" : "rgba(15, 42, 34, 0.22)";
       for (const band of Object.values(wallBands)) {
         if (!band) {
           continue;
         }
         ctx.fillRect(band.x, band.y, band.w, band.h);
       }
-      ctx.strokeStyle = "rgba(15, 42, 34, 0.45)";
+      ctx.strokeStyle = wallsBlack ? "rgba(0,0,0,0.96)" : "rgba(15, 42, 34, 0.45)";
       ctx.lineWidth = 1 / camera.zoom;
       strokeRectSides(ctx, outerRect, sideVisibility, hiddenOuterIntervalsBySide);
     }

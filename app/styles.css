@@ -294,6 +294,32 @@ body {
   overflow-wrap: anywhere;
 }
 
+.room-quote-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.room-inline-field {
+  display: grid;
+  gap: 4px;
+  color: var(--ink);
+  font-size: 0.76rem;
+}
+
+.room-inline-field input[type="checkbox"] {
+  margin: 0;
+}
+
+.room-inline-field select {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  padding: 5px 7px;
+  min-width: 0;
+}
+
 .room-package-note {
   margin: 0 0 6px;
   font-size: 0.72rem;

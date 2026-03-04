@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="980" viewBox="0 0 520 980">
+  <rect width="520" height="980" fill="#f0efeb"/>
+
+  <rect x="20" y="20" width="480" height="108" rx="16" fill="#ffffff" stroke="#c0d8c4" stroke-width="2"/>
+  <rect x="34" y="36" width="28" height="76" rx="10" fill="#ece9e2" stroke="#d9d5ce"/>
+  <polygon points="44,74 54,64 54,84" fill="#686762"/>
+  <rect x="82" y="38" width="18" height="72" rx="8" fill="#9867b4"/>
+  <text x="118" y="62" font-size="44" font-family="Georgia, serif" fill="#1d1d1c">Merged Room</text>
+  <text x="118" y="96" font-size="20" font-family="Georgia, serif" fill="#66645f">S 0 • L 0 • G 0</text>
+  <text x="386" y="92" font-size="40" font-family="Georgia, serif" fill="#5d5b56">2 rects</text>
+
+  <rect x="20" y="144" width="480" height="812" rx="16" fill="#ffffff" stroke="#ddd9d1" stroke-width="2"/>
+  <rect x="34" y="160" width="448" height="96" rx="12" fill="#fafaf9" stroke="#e3dfd8"/>
+  <rect x="48" y="176" width="18" height="64" rx="7" fill="#44a5aa"/>
+  <text x="82" y="202" font-size="40" font-family="Georgia, serif" fill="#1d1d1c">rect_user_28</text>
+  <text x="82" y="234" font-size="20" font-family="Georgia, serif" fill="#66645f">S 2 • L 5 • G 1</text>
+  <text x="386" y="230" font-size="40" font-family="Georgia, serif" fill="#5d5b56">1 rect</text>
+
+  <line x1="44" y1="272" x2="476" y2="272" stroke="#d9d5ce" stroke-width="2"/>
+
+  <rect x="56" y="292" width="424" height="94" rx="10" fill="#fcfcfb" stroke="#dfdbd4" stroke-width="2"/>
+  <text x="72" y="328" font-size="20" font-family="Georgia, serif" fill="#686561">ID rect_user_28 • unassigned</text>
+  <text x="72" y="358" font-size="20" font-family="Georgia, serif" fill="#686561">Rects 1 • led_spot:5 • switch_single:2</text>
+
+  <rect x="56" y="404" width="424" height="116" rx="10" fill="#ffffff" stroke="#dfdbd4" stroke-width="2"/>
+  <text x="72" y="444" font-size="22" font-family="Georgia, serif" fill="#585652">+ Baseboard</text>
+  <text x="246" y="444" font-size="34" font-family="Georgia, serif" fill="#1d1d1c">0.00 m</text>
+  <text x="72" y="476" font-size="20" font-family="Georgia, serif" fill="#686561">(0.0 wu) (0 seg)</text>
+  <rect x="66" y="414" width="6" height="96" rx="3" fill="#d2cec7"/>
+
+  <rect x="56" y="536" width="424" height="116" rx="10" fill="#ffffff" stroke="#0f59b8" stroke-width="3"/>
+  <rect x="62" y="542" width="8" height="104" rx="4" fill="#0f59b8"/>
+  <text x="78" y="576" font-size="22" font-family="Georgia, serif" fill="#585652">+ Flooring</text>
+  <text x="228" y="576" font-size="34" font-family="Georgia, serif" fill="#1d1d1c">19.23 m^2</text>
+  <text x="78" y="608" font-size="20" font-family="Georgia, serif" fill="#0f59b8">(152597.4 wu^2)</text>
+  <text x="78" y="636" font-size="18" font-family="Georgia, serif" fill="#0f59b8">focused metric row</text>
+
+  <rect x="56" y="668" width="424" height="96" rx="10" fill="#ffffff" stroke="#dfdbd4" stroke-width="2"/>
+  <text x="72" y="706" font-size="22" font-family="Georgia, serif" fill="#585652">+ Painting</text>
+  <text x="228" y="706" font-size="34" font-family="Georgia, serif" fill="#1d1d1c">n/a</text>
+  <text x="72" y="736" font-size="20" font-family="Georgia, serif" fill="#686561">(h = 2.70m)</text>
+
+  <rect x="56" y="780" width="424" height="146" rx="10" fill="#ffffff" stroke="#dfdbd4" stroke-width="2"/>
+  <text x="72" y="818" font-size="22" font-family="Georgia, serif" fill="#585652">+ Electricity</text>
+  <text x="72" y="852" font-size="34" font-family="Georgia, serif" fill="#1d1d1c">switches 2, lamps 5</text>
+  <text x="72" y="886" font-size="20" font-family="Georgia, serif" fill="#686561">groups 1, links 3</text>
+</svg>

@@ -106,7 +106,8 @@ test("plan reducer openings add projects to valid wall host", () => {
     },
     widthWorld: 60,
     x: 50,
-    y: 0
+    y: 0,
+    productId: "door_standard"
   });
 });
 
@@ -1058,4 +1059,113 @@ test("plan reducer ignores deprecated lampGroup link targets", () => {
     targetId: "lg_user_1"
   });
   assert(linked === withLampB, "Deprecated lampGroup target should no-op.");
+});
+
+test("createEmptyPlan includes quote model and view defaults", () => {
+  const plan = createEmptyPlan();
+  assertDeepEqual(plan.view, {
+    roomHighlighting: true,
+    wallsBlack: false
+  });
+  assertEqual(plan.quote.groupMode, "room");
+  assertEqual(plan.quote.defaults.flooringTypeId, "floor_standard");
+  assertEqual(plan.quote.defaults.paintingTypeId, "paint_standard");
+});
+
+test("plan reducer toggles room visualization flags", () => {
+  const plan = createEmptyPlan();
+  const highlightOff = planReducer(plan, { type: "plan/view/toggleRoomHighlighting" });
+  assert(highlightOff !== plan, "Toggling room highlighting should produce a new plan object.");
+  assertEqual(highlightOff.view.roomHighlighting, false);
+  const wallsOn = planReducer(highlightOff, { type: "plan/view/toggleWallsBlack" });
+  assertEqual(wallsOn.view.wallsBlack, true);
+});
+
+test("plan reducer quote room config updates per room entry", () => {
+  const base = createEmptyPlan();
+  const next = planReducer(base, {
+    type: "plan/quote/setRoomConfig",
+    roomEntryId: "room:room_a",
+    patch: {
+      includeBaseboard: false,
+      flooringTypeId: "floor_tiles",
+      paintingTypeId: "paint_standard"
+    }
+  });
+
+  assert(next !== base, "Room quote config update should produce a new plan object.");
+  assertDeepEqual(next.quote.roomConfigs["room:room_a"], {
+    includeBaseboard: false,
+    flooringTypeId: "floor_tiles",
+    paintingTypeId: "paint_standard",
+    baseboardProfileId: "baseboard_standard"
+  });
+});
+
+test("plan reducer assigns and updates fixture/opening product ids", () => {
+  const base = createEmptyPlan();
+  const withRect = {
+    ...base,
+    entities: {
+      ...base.entities,
+      rectangles: [
+        {
+          id: "rect_a",
+          kind: "roomRect",
+          x: 0,
+          y: 0,
+          w: 100,
+          h: 80,
+          wallCm: { top: 10, right: 0, bottom: 0, left: 0 },
+          roomId: null,
+          label: null
+        }
+      ]
+    }
+  };
+
+  const withDoor = planReducer(withRect, {
+    type: "plan/openings/add",
+    openingId: "op_1",
+    kind: "door",
+    widthWorld: 40,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "top",
+      offset: 0.5
+    }
+  });
+  assertEqual(withDoor.entities.openings[0].productId, "door_standard");
+
+  const withDoorProduct = planReducer(withDoor, {
+    type: "plan/openings/setProduct",
+    openingId: "op_1",
+    productId: "door_standard"
+  });
+  assert(withDoorProduct === withDoor, "Setting identical door product should no-op.");
+
+  const withSwitch = planReducer(withDoor, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_s1",
+    kind: "switch",
+    x: 10,
+    y: 40,
+    host: {
+      type: "wallSide",
+      rectangleId: "rect_a",
+      side: "left",
+      offset: 0.5
+    }
+  });
+  assertEqual(withSwitch.entities.lighting.fixtures[0].productId, "switch_standard");
+
+  const withLamp = planReducer(withSwitch, {
+    type: "plan/lighting/addFixture",
+    fixtureId: "fx_l1",
+    kind: "lamp",
+    x: 50,
+    y: 50
+  });
+  assertEqual(withLamp.entities.lighting.fixtures[1].productId, "lamp_standard");
 });

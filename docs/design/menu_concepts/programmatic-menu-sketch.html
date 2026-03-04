@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Programmatic Menu Sketch</title>
+  <style>
+    :root {
+      --bg: #f0efeb;
+      --surface: #ffffff;
+      --border: #d8d4cd;
+      --text: #1f1f1f;
+      --muted: #676560;
+      --accent-room: #9363b2;
+      --accent-card: #2f6fd8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--text);
+      display: grid;
+      place-items: start center;
+      padding: 16px;
+    }
+
+    .viewport {
+      width: 420px;
+      min-height: 840px;
+    }
+
+    .room-card {
+      background: var(--surface);
+      border: 2px solid #b9d2be;
+      border-radius: 16px;
+      padding: 14px 14px 16px;
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.03);
+    }
+
+    .room-header {
+      display: grid;
+      grid-template-columns: 24px 14px 1fr auto;
+      column-gap: 12px;
+      align-items: center;
+    }
+
+    .chevron {
+      color: #66645f;
+      font-size: 20px;
+      line-height: 1;
+      text-align: center;
+    }
+
+    .room-pill {
+      width: 14px;
+      height: 56px;
+      border-radius: 8px;
+      background: var(--accent-room);
+    }
+
+    .room-title {
+      font-size: 48px;
+      line-height: 0.95;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .room-meta {
+      margin-top: 4px;
+      font-size: 22px;
+      color: var(--muted);
+    }
+
+    .room-count {
+      font-size: 48px;
+      color: #595752;
+      line-height: 1;
+      white-space: nowrap;
+      margin-left: 10px;
+    }
+
+    .room-content {
+      margin-top: 14px;
+      border-top: 2px solid var(--border);
+      padding-top: 12px;
+    }
+
+    .rectangles-block {
+      padding: 2px 4px 10px 40px;
+      border-bottom: 2px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    .rect-row {
+      display: grid;
+      grid-template-columns: 10px 1fr auto;
+      gap: 10px;
+      align-items: baseline;
+      padding: 6px 0;
+    }
+
+    .rect-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #b9b5ad;
+      margin-top: 8px;
+    }
+
+    .rect-name {
+      font-size: 32px;
+      line-height: 1.05;
+    }
+
+    .rect-sub {
+      grid-column: 2;
+      margin-top: -2px;
+      font-size: 19px;
+      color: var(--muted);
+    }
+
+    .rect-count {
+      font-size: 30px;
+      color: #595752;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .metrics {
+      display: grid;
+      gap: 12px;
+      padding-left: 36px;
+    }
+
+    .metric-card {
+      position: relative;
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      background: #fcfcfb;
+      padding: 12px 14px 12px 18px;
+    }
+
+    .metric-card::before {
+      content: "";
+      position: absolute;
+      left: 8px;
+      top: 10px;
+      bottom: 10px;
+      width: 5px;
+      border-radius: 4px;
+      background: #b8b4ac;
+    }
+
+    .metric-card[data-selected="true"] {
+      border-color: var(--accent-card);
+      box-shadow: 0 0 0 1px rgba(47, 111, 216, 0.08);
+    }
+
+    .metric-card[data-selected="true"]::before {
+      background: var(--accent-card);
+    }
+
+    .metric-head {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px;
+      align-items: baseline;
+    }
+
+    .metric-plus {
+      font-size: 28px;
+      line-height: 1;
+      color: #5d5b56;
+    }
+
+    .metric-label {
+      font-size: 46px;
+      line-height: 0.95;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .metric-meta {
+      margin-top: 4px;
+      font-size: 22px;
+      color: var(--muted);
+    }
+
+    .metric-card[data-selected="true"] .metric-meta {
+      color: var(--accent-card);
+    }
+  </style>
+</head>
+<body>
+  <div class="viewport">
+    <div id="mount"></div>
+  </div>
+
+  <script>
+    const data = {
+      name: "Merged Room",
+      stats: "S 0 • L 0 • G 0",
+      rectCount: "2 rects",
+      color: "#9363b2",
+      rectangles: [
+        { name: "rect_user_28", stats: "S 2 • L 5 • G 1", rectCount: "1 rect" }
+      ],
+      metrics: [
+        { label: "Baseboard - 0.00 m", meta: "(0.0 wu) (0 seg)", selected: false },
+        { label: "Flooring - 19.23 m^2", meta: "(152597.4 wu^2)", selected: true },
+        { label: "Painting - n/a", meta: "(h = 2.70m)", selected: false },
+        { label: "Electricity - switches 2, lamps 5", meta: "groups 1, links 3", selected: false }
+      ]
+    };
+
+    const mount = document.getElementById("mount");
+    mount.appendChild(renderRoom(data));
+
+    function renderRoom(room) {
+      const card = document.createElement("section");
+      card.className = "room-card";
+
+      const header = document.createElement("header");
+      header.className = "room-header";
+
+      const chevron = document.createElement("div");
+      chevron.className = "chevron";
+      chevron.textContent = "▾";
+
+      const pill = document.createElement("div");
+      pill.className = "room-pill";
+      pill.style.background = room.color;
+
+      const titleWrap = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "room-title";
+      title.textContent = room.name;
+      const meta = document.createElement("div");
+      meta.className = "room-meta";
+      meta.textContent = room.stats;
+      titleWrap.append(title, meta);
+
+      const count = document.createElement("div");
+      count.className = "room-count";
+      count.textContent = room.rectCount;
+
+      header.append(chevron, pill, titleWrap, count);
+      card.appendChild(header);
+
+      const content = document.createElement("div");
+      content.className = "room-content";
+
+      const rectanglesBlock = document.createElement("div");
+      rectanglesBlock.className = "rectangles-block";
+      for (const rect of room.rectangles) {
+        const row = document.createElement("div");
+        row.className = "rect-row";
+
+        const dot = document.createElement("div");
+        dot.className = "rect-dot";
+
+        const name = document.createElement("div");
+        name.className = "rect-name";
+        name.textContent = rect.name;
+
+        const rectCount = document.createElement("div");
+        rectCount.className = "rect-count";
+        rectCount.textContent = rect.rectCount;
+
+        const sub = document.createElement("div");
+        sub.className = "rect-sub";
+        sub.textContent = rect.stats;
+
+        row.append(dot, name, rectCount, sub);
+        rectanglesBlock.appendChild(row);
+      }
+
+      const metrics = document.createElement("div");
+      metrics.className = "metrics";
+      for (const metric of room.metrics) {
+        const item = document.createElement("article");
+        item.className = "metric-card";
+        item.dataset.selected = metric.selected ? "true" : "false";
+
+        const head = document.createElement("div");
+        head.className = "metric-head";
+
+        const plus = document.createElement("div");
+        plus.className = "metric-plus";
+        plus.textContent = "+";
+
+        const label = document.createElement("div");
+        label.className = "metric-label";
+        label.textContent = metric.label;
+
+        const meta = document.createElement("div");
+        meta.className = "metric-meta";
+        meta.textContent = metric.meta;
+
+        head.append(plus, label);
+        item.append(head, meta);
+        metrics.appendChild(item);
+      }
+
+      content.append(rectanglesBlock, metrics);
+      card.appendChild(content);
+      return card;
+    }
+  </script>
+</body>
+</html>

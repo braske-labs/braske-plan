@@ -196,6 +196,8 @@ function migratePlan(raw) {
   const backgroundTransform = isPlainObject(background.transform) ? background.transform : {};
   const scale = isPlainObject(raw.scale) ? raw.scale : {};
   const settings = isPlainObject(raw.settings) ? raw.settings : {};
+  const view = isPlainObject(raw.view) ? raw.view : {};
+  const quote = isPlainObject(raw.quote) ? raw.quote : {};
   const meta = isPlainObject(raw.meta) ? raw.meta : {};
   const normalizedRectangles = normalizeRectangles(entities.rectangles);
 
@@ -227,6 +229,8 @@ function migratePlan(raw) {
       referenceLine: normalizeReferenceLine(scale.referenceLine)
     },
     settings: normalizePlanSettings(settings, base.settings),
+    view: normalizePlanView(view, base.view),
+    quote: normalizeQuote(quote, base.quote),
     entities: {
       rectangles: normalizedRectangles,
       openings: normalizeOpenings(entities.openings, normalizedRectangles),
@@ -350,6 +354,106 @@ function normalizePlanSettings(rawSettings, baseSettings) {
   };
 }
 
+function normalizePlanView(rawView, baseView) {
+  const view = isPlainObject(rawView) ? rawView : {};
+  const base = isPlainObject(baseView) ? baseView : { roomHighlighting: true, wallsBlack: false };
+  return {
+    roomHighlighting: view.roomHighlighting === undefined ? base.roomHighlighting : view.roomHighlighting !== false,
+    wallsBlack: view.wallsBlack === undefined ? Boolean(base.wallsBlack) : Boolean(view.wallsBlack)
+  };
+}
+
+function normalizeQuote(rawQuote, baseQuote) {
+  const quote = isPlainObject(rawQuote) ? rawQuote : {};
+  const base = isPlainObject(baseQuote) ? baseQuote : {};
+  const baseCatalog = isPlainObject(base.catalog) ? base.catalog : {};
+  const baseDefaults = isPlainObject(base.defaults) ? base.defaults : {};
+  const baseRoomConfigs = isPlainObject(base.roomConfigs) ? base.roomConfigs : {};
+  const catalog = isPlainObject(quote.catalog) ? quote.catalog : {};
+  const defaults = isPlainObject(quote.defaults) ? quote.defaults : {};
+  const roomConfigs = isPlainObject(quote.roomConfigs) ? quote.roomConfigs : {};
+
+  return {
+    groupMode: quote.groupMode === "job" ? "job" : (base.groupMode === "job" ? "job" : "room"),
+    catalog: {
+      baseboardProfiles: normalizeQuoteCatalogList(catalog.baseboardProfiles, baseCatalog.baseboardProfiles, "baseboard"),
+      flooringTypes: normalizeQuoteCatalogList(catalog.flooringTypes, baseCatalog.flooringTypes, "area"),
+      paintingTypes: normalizeQuoteCatalogList(catalog.paintingTypes, baseCatalog.paintingTypes, "area"),
+      switchProducts: normalizeQuoteCatalogList(catalog.switchProducts, baseCatalog.switchProducts, "unit"),
+      lampProducts: normalizeQuoteCatalogList(catalog.lampProducts, baseCatalog.lampProducts, "unit"),
+      doorProducts: normalizeQuoteCatalogList(catalog.doorProducts, baseCatalog.doorProducts, "unit")
+    },
+    defaults: {
+      baseboardProfileId: normalizeNonEmptyString(defaults.baseboardProfileId) ?? normalizeNonEmptyString(baseDefaults.baseboardProfileId),
+      flooringTypeId: normalizeNonEmptyString(defaults.flooringTypeId) ?? normalizeNonEmptyString(baseDefaults.flooringTypeId),
+      paintingTypeId: normalizeNonEmptyString(defaults.paintingTypeId) ?? normalizeNonEmptyString(baseDefaults.paintingTypeId),
+      switchProductId: normalizeNonEmptyString(defaults.switchProductId) ?? normalizeNonEmptyString(baseDefaults.switchProductId),
+      lampProductId: normalizeNonEmptyString(defaults.lampProductId) ?? normalizeNonEmptyString(baseDefaults.lampProductId),
+      doorProductId: normalizeNonEmptyString(defaults.doorProductId) ?? normalizeNonEmptyString(baseDefaults.doorProductId)
+    },
+    roomConfigs: normalizeQuoteRoomConfigs(roomConfigs, baseRoomConfigs)
+  };
+}
+
+function normalizeQuoteCatalogList(rawList, fallbackList, mode) {
+  const source = Array.isArray(rawList) ? rawList : (Array.isArray(fallbackList) ? fallbackList : []);
+  const normalized = [];
+  for (const rawItem of source) {
+    if (!isPlainObject(rawItem)) {
+      continue;
+    }
+    const id = normalizeNonEmptyString(rawItem.id);
+    const name = normalizeNonEmptyString(rawItem.name);
+    if (!id || !name || normalized.some((item) => item.id === id)) {
+      continue;
+    }
+    if (mode === "baseboard") {
+      normalized.push({
+        id,
+        name,
+        materialPerM: nonNegativeNumber(rawItem.materialPerM, 0),
+        laborPerM: nonNegativeNumber(rawItem.laborPerM, 0)
+      });
+      continue;
+    }
+    if (mode === "area") {
+      normalized.push({
+        id,
+        name,
+        materialPerM2: nonNegativeNumber(rawItem.materialPerM2, 0),
+        laborPerM2: nonNegativeNumber(rawItem.laborPerM2, 0)
+      });
+      continue;
+    }
+    normalized.push({
+      id,
+      name,
+      unitPrice: nonNegativeNumber(rawItem.unitPrice, 0)
+    });
+  }
+  return normalized;
+}
+
+function normalizeQuoteRoomConfigs(rawRoomConfigs, fallbackRoomConfigs) {
+  const source = isPlainObject(rawRoomConfigs)
+    ? rawRoomConfigs
+    : (isPlainObject(fallbackRoomConfigs) ? fallbackRoomConfigs : {});
+  const normalized = {};
+  for (const [roomEntryId, rawConfig] of Object.entries(source)) {
+    const id = normalizeNonEmptyString(roomEntryId);
+    if (!id || !isPlainObject(rawConfig)) {
+      continue;
+    }
+    normalized[id] = {
+      includeBaseboard: rawConfig.includeBaseboard !== false,
+      flooringTypeId: normalizeNonEmptyString(rawConfig.flooringTypeId),
+      paintingTypeId: normalizeNonEmptyString(rawConfig.paintingTypeId),
+      baseboardProfileId: normalizeNonEmptyString(rawConfig.baseboardProfileId)
+    };
+  }
+  return normalized;
+}
+
 function normalizeOpenings(rawOpenings, rectangles = []) {
   if (!Array.isArray(rawOpenings)) {
     return [];
@@ -384,7 +488,8 @@ function normalizeOpenings(rawOpenings, rectangles = []) {
       host,
       widthWorld,
       x: finiteNumber(rawOpening.x, rectangle.x),
-      y: finiteNumber(rawOpening.y, rectangle.y)
+      y: finiteNumber(rawOpening.y, rectangle.y),
+      productId: kind === "door" ? normalizeNonEmptyString(rawOpening.productId) : null
     });
   }
   return result;
@@ -459,6 +564,7 @@ function normalizeLightingFixtures(rawFixtures) {
       y,
       roomId: roomId ?? null,
       host,
+      productId: normalizeNonEmptyString(rawFixture.productId),
       meta: {
         label: label ?? null
       }

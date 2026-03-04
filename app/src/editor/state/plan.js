@@ -4,6 +4,12 @@ const PLAN_VERSION = 1;
 const DEFAULT_ROOM_TYPE = "generic";
 const DEFAULT_MERGED_ROOM_NAME = "Merged Room";
 const DEFAULT_WALL_HEIGHT_METERS = 2.7;
+const DEFAULT_FLOORING_TYPE_ID = "floor_standard";
+const DEFAULT_PAINTING_TYPE_ID = "paint_standard";
+const DEFAULT_BASEBOARD_PROFILE_ID = "baseboard_standard";
+const DEFAULT_LAMP_PRODUCT_ID = "lamp_standard";
+const DEFAULT_SWITCH_PRODUCT_ID = "switch_standard";
+const DEFAULT_DOOR_PRODUCT_ID = "door_standard";
 const ROOM_TYPE_SET = new Set([
   "generic",
   "living_room",
@@ -41,6 +47,11 @@ export function createEmptyPlan() {
     settings: {
       wallHeightMeters: DEFAULT_WALL_HEIGHT_METERS
     },
+    view: {
+      roomHighlighting: true,
+      wallsBlack: false
+    },
+    quote: createDefaultQuoteModel(),
     entities: {
       rectangles: [],
       openings: [],
@@ -169,6 +180,139 @@ export function planReducer(plan, action) {
         settings: {
           ...(plan.settings ?? {}),
           wallHeightMeters
+        }
+      });
+    }
+
+    case "plan/view/toggleRoomHighlighting": {
+      const currentView = normalizePlanView(plan.view);
+      return stampPlan({
+        ...plan,
+        view: {
+          ...currentView,
+          roomHighlighting: !currentView.roomHighlighting
+        }
+      });
+    }
+
+    case "plan/view/toggleWallsBlack": {
+      const currentView = normalizePlanView(plan.view);
+      return stampPlan({
+        ...plan,
+        view: {
+          ...currentView,
+          wallsBlack: !currentView.wallsBlack
+        }
+      });
+    }
+
+    case "plan/quote/setGroupMode": {
+      const groupMode = action.groupMode === "job" ? "job" : "room";
+      const currentQuote = normalizeQuoteModel(plan.quote);
+      if (currentQuote.groupMode === groupMode) {
+        return plan;
+      }
+      return stampPlan({
+        ...plan,
+        quote: {
+          ...currentQuote,
+          groupMode
+        }
+      });
+    }
+
+    case "plan/quote/upsertCatalogItem": {
+      const currentQuote = normalizeQuoteModel(plan.quote);
+      const catalogKey = normalizeQuoteCatalogKey(action.catalogKey);
+      if (!catalogKey) {
+        return plan;
+      }
+      const normalizedItem = normalizeQuoteCatalogItem(catalogKey, action.item);
+      if (!normalizedItem) {
+        return plan;
+      }
+      const currentList = getQuoteCatalogList(currentQuote, catalogKey);
+      const existingIndex = currentList.findIndex((item) => item.id === normalizedItem.id);
+      let nextList = currentList.slice();
+      if (existingIndex >= 0) {
+        const previousItem = nextList[existingIndex];
+        if (areQuoteCatalogItemsEqual(previousItem, normalizedItem)) {
+          return plan;
+        }
+        nextList[existingIndex] = normalizedItem;
+      } else {
+        nextList.push(normalizedItem);
+      }
+      return stampPlan({
+        ...plan,
+        quote: {
+          ...currentQuote,
+          catalog: {
+            ...currentQuote.catalog,
+            [catalogKey]: nextList
+          }
+        }
+      });
+    }
+
+    case "plan/quote/setDefault": {
+      const currentQuote = normalizeQuoteModel(plan.quote);
+      const defaultKey = normalizeQuoteDefaultKey(action.key);
+      const defaultValue = normalizeNonEmptyString(action.value);
+      if (!defaultKey || !defaultValue) {
+        return plan;
+      }
+      if (currentQuote.defaults[defaultKey] === defaultValue) {
+        return plan;
+      }
+      return stampPlan({
+        ...plan,
+        quote: {
+          ...currentQuote,
+          defaults: {
+            ...currentQuote.defaults,
+            [defaultKey]: defaultValue
+          }
+        }
+      });
+    }
+
+    case "plan/quote/setRoomConfig": {
+      const roomEntryId = normalizeNonEmptyString(action.roomEntryId);
+      if (!roomEntryId) {
+        return plan;
+      }
+      const currentQuote = normalizeQuoteModel(plan.quote);
+      const currentConfig = normalizeRoomQuoteConfig(
+        currentQuote.roomConfigs?.[roomEntryId],
+        currentQuote.defaults
+      );
+      const patch = action.patch && typeof action.patch === "object" ? action.patch : {};
+      const nextConfig = {
+        ...currentConfig,
+        includeBaseboard: patch.includeBaseboard === undefined
+          ? currentConfig.includeBaseboard
+          : Boolean(patch.includeBaseboard),
+        flooringTypeId: normalizeNonEmptyString(patch.flooringTypeId) ?? currentConfig.flooringTypeId,
+        paintingTypeId: normalizeNonEmptyString(patch.paintingTypeId) ?? currentConfig.paintingTypeId,
+        baseboardProfileId: normalizeNonEmptyString(patch.baseboardProfileId) ?? currentConfig.baseboardProfileId
+      };
+      if (
+        nextConfig.includeBaseboard === currentConfig.includeBaseboard &&
+        nextConfig.flooringTypeId === currentConfig.flooringTypeId &&
+        nextConfig.paintingTypeId === currentConfig.paintingTypeId &&
+        nextConfig.baseboardProfileId === currentConfig.baseboardProfileId
+      ) {
+        return plan;
+      }
+      return stampPlan({
+        ...plan,
+        quote: {
+          ...currentQuote,
+          roomConfigs: {
+            ...currentQuote.roomConfigs,
+            [roomEntryId]: nextConfig
+          }
         }
       });
     }
@@ -689,6 +833,10 @@ export function planReducer(plan, action) {
       if (!placement) {
         return plan;
       }
+      const quote = normalizeQuoteModel(plan.quote);
+      const productId = kind === "door"
+        ? resolveDoorProductId(normalizeNonEmptyString(action.productId), quote)
+        : null;
 
       return stampPlan({
         ...plan,
@@ -702,7 +850,8 @@ export function planReducer(plan, action) {
               host: placement.host,
               widthWorld: placement.widthWorld,
               x: placement.x,
-              y: placement.y
+              y: placement.y,
+              productId
             }
           ]
         }
@@ -833,6 +982,39 @@ export function planReducer(plan, action) {
       });
     }
 
+    case "plan/openings/setProduct": {
+      const openingId = normalizeNonEmptyString(action.openingId);
+      if (!openingId) {
+        return plan;
+      }
+      const openings = ensureOpeningCollection(plan.entities.openings);
+      const openingIndex = openings.findIndex((opening) => opening?.id === openingId);
+      if (openingIndex < 0) {
+        return plan;
+      }
+      const current = openings[openingIndex];
+      if (current?.kind !== "door") {
+        return plan;
+      }
+      const quote = normalizeQuoteModel(plan.quote);
+      const productId = resolveDoorProductId(normalizeNonEmptyString(action.productId), quote);
+      if ((current.productId ?? null) === (productId ?? null)) {
+        return plan;
+      }
+      const nextOpenings = openings.slice();
+      nextOpenings[openingIndex] = {
+        ...current,
+        productId
+      };
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          openings: nextOpenings
+        }
+      });
+    }
+
     case "plan/lighting/addFixture": {
       const fixtureId = normalizeNonEmptyString(action.fixtureId);
       const fixtureKind = normalizeLightingFixtureKind(action.kind);
@@ -852,6 +1034,12 @@ export function planReducer(plan, action) {
       const roomId = normalizeNonEmptyString(action.roomId);
       const host = normalizeLightingFixtureHost(action.host, fixtureKind);
       const label = normalizeLightingFixtureLabel(action.label);
+      const quote = normalizeQuoteModel(plan.quote);
+      const productId = resolveLightingFixtureProductId(
+        fixtureKind,
+        normalizeNonEmptyString(action.productId),
+        quote
+      );
 
       const nextFixture = {
         id: fixtureId,
@@ -861,6 +1049,7 @@ export function planReducer(plan, action) {
         y,
         roomId: roomId ?? null,
         host,
+        productId,
         meta: {
           label
         }
@@ -955,6 +1144,43 @@ export function planReducer(plan, action) {
         entities: {
           ...plan.entities,
           lighting: nextLighting
+        }
+      });
+    }
+
+    case "plan/lighting/setFixtureProduct": {
+      const fixtureId = normalizeNonEmptyString(action.fixtureId);
+      if (!fixtureId) {
+        return plan;
+      }
+      const lighting = ensureLightingCollections(plan.entities.lighting);
+      const fixtureIndex = lighting.fixtures.findIndex((fixture) => fixture?.id === fixtureId);
+      if (fixtureIndex < 0) {
+        return plan;
+      }
+      const current = lighting.fixtures[fixtureIndex];
+      const quote = normalizeQuoteModel(plan.quote);
+      const productId = resolveLightingFixtureProductId(
+        current.kind,
+        normalizeNonEmptyString(action.productId),
+        quote
+      );
+      if ((current.productId ?? null) === (productId ?? null)) {
+        return plan;
+      }
+      const nextFixtures = lighting.fixtures.slice();
+      nextFixtures[fixtureIndex] = {
+        ...current,
+        productId
+      };
+      return stampPlan({
+        ...plan,
+        entities: {
+          ...plan.entities,
+          lighting: {
+            ...lighting,
+            fixtures: nextFixtures
+          }
         }
       });
     }
@@ -1882,6 +2108,223 @@ function normalizeRectangleKind(kind) {
     return kind;
   }
   return null;
+}
+
+function createDefaultQuoteModel() {
+  return {
+    groupMode: "room",
+    catalog: {
+      baseboardProfiles: [
+        { id: DEFAULT_BASEBOARD_PROFILE_ID, name: "Baseboard Standard", materialPerM: 6, laborPerM: 12 }
+      ],
+      flooringTypes: [
+        { id: DEFAULT_FLOORING_TYPE_ID, name: "Floor Standard", materialPerM2: 14, laborPerM2: 14 },
+        { id: "floor_tiles", name: "Tiles", materialPerM2: 24, laborPerM2: 22 }
+      ],
+      paintingTypes: [
+        { id: DEFAULT_PAINTING_TYPE_ID, name: "Paint Standard", materialPerM2: 2.5, laborPerM2: 7 }
+      ],
+      switchProducts: [
+        { id: DEFAULT_SWITCH_PRODUCT_ID, name: "Switch Standard", unitPrice: 22 }
+      ],
+      lampProducts: [
+        { id: DEFAULT_LAMP_PRODUCT_ID, name: "Lamp Standard", unitPrice: 16 }
+      ],
+      doorProducts: [
+        { id: DEFAULT_DOOR_PRODUCT_ID, name: "Door Standard", unitPrice: 145 }
+      ]
+    },
+    defaults: {
+      baseboardProfileId: DEFAULT_BASEBOARD_PROFILE_ID,
+      flooringTypeId: DEFAULT_FLOORING_TYPE_ID,
+      paintingTypeId: DEFAULT_PAINTING_TYPE_ID,
+      switchProductId: DEFAULT_SWITCH_PRODUCT_ID,
+      lampProductId: DEFAULT_LAMP_PRODUCT_ID,
+      doorProductId: DEFAULT_DOOR_PRODUCT_ID
+    },
+    roomConfigs: {}
+  };
+}
+
+function normalizePlanView(rawView) {
+  const view = rawView && typeof rawView === "object" ? rawView : {};
+  return {
+    roomHighlighting: view.roomHighlighting !== false,
+    wallsBlack: Boolean(view.wallsBlack)
+  };
+}
+
+function normalizeQuoteModel(rawQuote) {
+  const defaults = createDefaultQuoteModel();
+  const quote = rawQuote && typeof rawQuote === "object" ? rawQuote : {};
+  const catalog = quote.catalog && typeof quote.catalog === "object" ? quote.catalog : {};
+  const normalized = {
+    groupMode: quote.groupMode === "job" ? "job" : "room",
+    catalog: {
+      baseboardProfiles: normalizeQuoteCatalogList("baseboardProfiles", catalog.baseboardProfiles, defaults.catalog.baseboardProfiles),
+      flooringTypes: normalizeQuoteCatalogList("flooringTypes", catalog.flooringTypes, defaults.catalog.flooringTypes),
+      paintingTypes: normalizeQuoteCatalogList("paintingTypes", catalog.paintingTypes, defaults.catalog.paintingTypes),
+      switchProducts: normalizeQuoteCatalogList("switchProducts", catalog.switchProducts, defaults.catalog.switchProducts),
+      lampProducts: normalizeQuoteCatalogList("lampProducts", catalog.lampProducts, defaults.catalog.lampProducts),
+      doorProducts: normalizeQuoteCatalogList("doorProducts", catalog.doorProducts, defaults.catalog.doorProducts)
+    },
+    defaults: {
+      baseboardProfileId: normalizeNonEmptyString(quote?.defaults?.baseboardProfileId) ?? defaults.defaults.baseboardProfileId,
+      flooringTypeId: normalizeNonEmptyString(quote?.defaults?.flooringTypeId) ?? defaults.defaults.flooringTypeId,
+      paintingTypeId: normalizeNonEmptyString(quote?.defaults?.paintingTypeId) ?? defaults.defaults.paintingTypeId,
+      switchProductId: normalizeNonEmptyString(quote?.defaults?.switchProductId) ?? defaults.defaults.switchProductId,
+      lampProductId: normalizeNonEmptyString(quote?.defaults?.lampProductId) ?? defaults.defaults.lampProductId,
+      doorProductId: normalizeNonEmptyString(quote?.defaults?.doorProductId) ?? defaults.defaults.doorProductId
+    },
+    roomConfigs: {}
+  };
+  const roomConfigs = quote.roomConfigs && typeof quote.roomConfigs === "object" ? quote.roomConfigs : {};
+  for (const [roomEntryId, rawConfig] of Object.entries(roomConfigs)) {
+    const normalizedRoomEntryId = normalizeNonEmptyString(roomEntryId);
+    if (!normalizedRoomEntryId) {
+      continue;
+    }
+    normalized.roomConfigs[normalizedRoomEntryId] = normalizeRoomQuoteConfig(rawConfig, normalized.defaults);
+  }
+  return normalized;
+}
+
+function normalizeRoomQuoteConfig(rawConfig, defaults) {
+  const config = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
+  return {
+    includeBaseboard: config.includeBaseboard !== false,
+    flooringTypeId: normalizeNonEmptyString(config.flooringTypeId) ?? defaults.flooringTypeId,
+    paintingTypeId: normalizeNonEmptyString(config.paintingTypeId) ?? defaults.paintingTypeId,
+    baseboardProfileId: normalizeNonEmptyString(config.baseboardProfileId) ?? defaults.baseboardProfileId
+  };
+}
+
+function normalizeQuoteCatalogKey(catalogKey) {
+  if (
+    catalogKey === "baseboardProfiles" ||
+    catalogKey === "flooringTypes" ||
+    catalogKey === "paintingTypes" ||
+    catalogKey === "switchProducts" ||
+    catalogKey === "lampProducts" ||
+    catalogKey === "doorProducts"
+  ) {
+    return catalogKey;
+  }
+  return null;
+}
+
+function normalizeQuoteDefaultKey(key) {
+  if (
+    key === "baseboardProfileId" ||
+    key === "flooringTypeId" ||
+    key === "paintingTypeId" ||
+    key === "switchProductId" ||
+    key === "lampProductId" ||
+    key === "doorProductId"
+  ) {
+    return key;
+  }
+  return null;
+}
+
+function getQuoteCatalogList(quote, catalogKey) {
+  const normalizedKey = normalizeQuoteCatalogKey(catalogKey);
+  if (!normalizedKey) {
+    return [];
+  }
+  const list = quote?.catalog?.[normalizedKey];
+  return Array.isArray(list) ? list : [];
+}
+
+function normalizeQuoteCatalogList(catalogKey, rawList, fallbackList) {
+  const list = Array.isArray(rawList) ? rawList : fallbackList;
+  const normalized = [];
+  for (const rawItem of list) {
+    const item = normalizeQuoteCatalogItem(catalogKey, rawItem);
+    if (!item || normalized.some((candidate) => candidate.id === item.id)) {
+      continue;
+    }
+    normalized.push(item);
+  }
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return Array.isArray(fallbackList) ? fallbackList.map((item) => ({ ...item })) : [];
+}
+
+function normalizeQuoteCatalogItem(catalogKey, rawItem) {
+  const item = rawItem && typeof rawItem === "object" ? rawItem : null;
+  if (!item) {
+    return null;
+  }
+  const id = normalizeNonEmptyString(item.id);
+  const name = normalizeNonEmptyString(item.name);
+  if (!id || !name) {
+    return null;
+  }
+  if (catalogKey === "baseboardProfiles") {
+    return {
+      id,
+      name,
+      materialPerM: nonNegativeFiniteNumber(item.materialPerM, 0),
+      laborPerM: nonNegativeFiniteNumber(item.laborPerM, 0)
+    };
+  }
+  if (catalogKey === "flooringTypes" || catalogKey === "paintingTypes") {
+    return {
+      id,
+      name,
+      materialPerM2: nonNegativeFiniteNumber(item.materialPerM2, 0),
+      laborPerM2: nonNegativeFiniteNumber(item.laborPerM2, 0)
+    };
+  }
+  return {
+    id,
+    name,
+    unitPrice: nonNegativeFiniteNumber(item.unitPrice, 0)
+  };
+}
+
+function areQuoteCatalogItemsEqual(left, right) {
+  if (!left || !right || left.id !== right.id || left.name !== right.name) {
+    return false;
+  }
+  if ("materialPerM" in left || "materialPerM" in right) {
+    return left.materialPerM === right.materialPerM && left.laborPerM === right.laborPerM;
+  }
+  if ("materialPerM2" in left || "materialPerM2" in right) {
+    return left.materialPerM2 === right.materialPerM2 && left.laborPerM2 === right.laborPerM2;
+  }
+  return left.unitPrice === right.unitPrice;
+}
+
+function resolveLightingFixtureProductId(kind, requestedProductId, quote) {
+  if (kind !== "switch" && kind !== "lamp") {
+    return null;
+  }
+  const collectionKey = kind === "switch" ? "switchProducts" : "lampProducts";
+  const defaultKey = kind === "switch" ? "switchProductId" : "lampProductId";
+  const list = getQuoteCatalogList(quote, collectionKey);
+  if (requestedProductId && list.some((item) => item.id === requestedProductId)) {
+    return requestedProductId;
+  }
+  const defaultProductId = normalizeNonEmptyString(quote?.defaults?.[defaultKey]);
+  if (defaultProductId && list.some((item) => item.id === defaultProductId)) {
+    return defaultProductId;
+  }
+  return list[0]?.id ?? null;
+}
+
+function resolveDoorProductId(requestedProductId, quote) {
+  const list = getQuoteCatalogList(quote, "doorProducts");
+  if (requestedProductId && list.some((item) => item.id === requestedProductId)) {
+    return requestedProductId;
+  }
+  const defaultProductId = normalizeNonEmptyString(quote?.defaults?.doorProductId);
+  if (defaultProductId && list.some((item) => item.id === defaultProductId)) {
+    return defaultProductId;
+  }
+  return list[0]?.id ?? null;
 }
 
 function resolveSharedExistingRoomId(rectangles) {
