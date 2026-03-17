@@ -3,13 +3,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-secret-key")
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = [host for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if host]
+ALLOWED_HOSTS = [
+    host
+    for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+    if host
+]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -19,6 +22,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "planner",
 ]
 
 MIDDLEWARE = [
@@ -84,4 +88,3 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.FormParser",
     ],
 }
-
