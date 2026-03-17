@@ -100,7 +100,9 @@ def clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
-def connected_component_from_seed(mask: np.ndarray, seed_xy: Tuple[int, int]) -> np.ndarray:
+def connected_component_from_seed(
+    mask: np.ndarray, seed_xy: Tuple[int, int]
+) -> np.ndarray:
     h, w = mask.shape
     sx, sy = seed_xy
     if sx < 0 or sx >= w or sy < 0 or sy >= h:
@@ -121,7 +123,9 @@ def connected_component_from_seed(mask: np.ndarray, seed_xy: Tuple[int, int]) ->
 
 
 def keep_large_components(mask: np.ndarray, min_area: int) -> np.ndarray:
-    labels_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    labels_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask, connectivity=8
+    )
     out = np.zeros_like(mask, dtype=np.uint8)
     for label_idx in range(1, labels_count):
         area = int(stats[label_idx, cv2.CC_STAT_AREA])
@@ -177,7 +181,9 @@ def make_stop_mask(
         thick = cv2.morphologyEx(thick, cv2.MORPH_CLOSE, k)
 
     if margin > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (margin * 2 + 1, margin * 2 + 1))
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (margin * 2 + 1, margin * 2 + 1)
+        )
         thick = cv2.dilate(thick, k, iterations=1)
 
     return (thick > 0).astype(np.uint8)
@@ -202,11 +208,15 @@ def make_floor_similarity_mask(
     return (delta <= color_tol).astype(np.uint8)
 
 
-def grow_rectangle_in_mask(mask: np.ndarray, seed_xy: Tuple[int, int]) -> Optional[Rect]:
+def grow_rectangle_in_mask(
+    mask: np.ndarray, seed_xy: Tuple[int, int]
+) -> Optional[Rect]:
     return largest_rectangle_containing_seed(mask, seed_xy)
 
 
-def largest_rectangle_containing_seed(mask: np.ndarray, seed_xy: Tuple[int, int]) -> Optional[Rect]:
+def largest_rectangle_containing_seed(
+    mask: np.ndarray, seed_xy: Tuple[int, int]
+) -> Optional[Rect]:
     h, w = mask.shape
     sx, sy = seed_xy
     if mask[sy, sx] == 0:
@@ -267,7 +277,9 @@ def parse_fill_color(fill: str) -> Tuple[int, int, int]:
     return rgb  # type: ignore[return-value]
 
 
-def nearest_foreground(mask: np.ndarray, seed_xy: Tuple[int, int], max_radius: int) -> Optional[Tuple[int, int]]:
+def nearest_foreground(
+    mask: np.ndarray, seed_xy: Tuple[int, int], max_radius: int
+) -> Optional[Tuple[int, int]]:
     sx, sy = seed_xy
     if mask[sy, sx] > 0:
         return seed_xy
@@ -326,8 +338,12 @@ def main() -> None:
     )
     parser.add_argument("--input", required=True, help="Input image path.")
     parser.add_argument("--output", required=True, help="Output image path.")
-    parser.add_argument("--seed-x", required=True, type=int, help="Room seed X coordinate.")
-    parser.add_argument("--seed-y", required=True, type=int, help="Room seed Y coordinate.")
+    parser.add_argument(
+        "--seed-x", required=True, type=int, help="Room seed X coordinate."
+    )
+    parser.add_argument(
+        "--seed-y", required=True, type=int, help="Room seed Y coordinate."
+    )
     parser.add_argument(
         "--color-tol",
         type=float,
@@ -549,7 +565,9 @@ def main() -> None:
 
     # Split through narrow door-neck connections to keep only the target room.
     if args.split_kernel > 1:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (args.split_kernel, args.split_kernel))
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (args.split_kernel, args.split_kernel)
+        )
         eroded = cv2.erode(room_mask, k, iterations=1)
         split_seed = nearest_foreground(
             eroded,
@@ -570,7 +588,9 @@ def main() -> None:
     )
 
     if not rectangles:
-        raise RuntimeError("No rectangle was grown. Try increasing color tolerance or changing seed.")
+        raise RuntimeError(
+            "No rectangle was grown. Try increasing color tolerance or changing seed."
+        )
 
     if args.smart_left_expand and len(rectangles) == 1:
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -601,7 +621,9 @@ def main() -> None:
         debug[room_mask > 0] = (90, 170, 255)  # room candidate (blue-ish)
         debug[stop_mask > 0] = (0, 0, 255)  # obstacle/wall stop (red)
         for rect in rectangles:
-            cv2.rectangle(debug, (rect.left, rect.top), (rect.right, rect.bottom), (0, 255, 0), 2)
+            cv2.rectangle(
+                debug, (rect.left, rect.top), (rect.right, rect.bottom), (0, 255, 0), 2
+            )
         cv2.circle(debug, seed, 5, (255, 255, 0), -1)
         debug_out = Path(args.debug_mask_output)
         debug_out.parent.mkdir(parents=True, exist_ok=True)
