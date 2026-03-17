@@ -1,0 +1,62 @@
+name: Backend CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: braske_plan
+          POSTGRES_USER: braske_plan
+          POSTGRES_PASSWORD: braske_plan
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U braske_plan -d braske_plan"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      DJANGO_SECRET_KEY: ci-secret-key
+      DJANGO_DEBUG: 0
+      DJANGO_ALLOWED_HOSTS: 127.0.0.1,localhost
+      POSTGRES_DB: braske_plan
+      POSTGRES_USER: braske_plan
+      POSTGRES_PASSWORD: braske_plan
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+      TZ: Europe/Vilnius
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Run Ruff
+        run: uv run pre-commit run --all-files
+
+      - name: Run tests
+        run: uv run pytest
