@@ -7,6 +7,17 @@ from planner.models import Project, Revision, User
 
 
 @pytest.mark.django_db
+def test_api_root_lists_entry_points():
+    client = APIClient()
+
+    response = client.get("/api/")
+
+    assert response.status_code == 200
+    assert response.data["users"].endswith("/api/users/")
+    assert response.data["projects"].endswith("/api/projects/")
+
+
+@pytest.mark.django_db
 def test_create_project_creates_active_draft_revision():
     client = APIClient()
     user = User.objects.create(name="Ieva")

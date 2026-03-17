@@ -66,4 +66,3 @@ class ActiveRevisionUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Revision
         fields = ["label", "plan_json"]
-

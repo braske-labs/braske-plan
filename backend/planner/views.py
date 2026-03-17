@@ -1,6 +1,9 @@
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics
+from rest_framework.response import Response
+from rest_framework.reverse import reverse
+from rest_framework.views import APIView
 
 from .models import Project, User
 from .serializers import (
@@ -10,6 +13,16 @@ from .serializers import (
     RevisionSerializer,
     UserSerializer,
 )
+
+
+class ApiRootView(APIView):
+    def get(self, request):
+        return Response(
+            {
+                "users": reverse("user-list", request=request),
+                "projects": reverse("project-list", request=request),
+            }
+        )
 
 
 class UserListCreateView(generics.ListCreateAPIView):
@@ -42,7 +55,10 @@ class ActiveRevisionView(generics.RetrieveUpdateAPIView):
     serializer_class = RevisionSerializer
 
     def get_object(self):
-        project = get_object_or_404(Project.objects.select_related("active_revision"), pk=self.kwargs["pk"])
+        project = get_object_or_404(
+            Project.objects.select_related("active_revision"),
+            pk=self.kwargs["pk"],
+        )
         revision = project.active_revision
         if revision is None:
             raise Http404("Project has no active revision.")
