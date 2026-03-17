@@ -18,6 +18,7 @@ Local Python workflow with `uv`:
 cd backend
 uv sync
 cp .env.example .env
+uv run pre-commit install
 uv run python manage.py migrate
 uv run python manage.py runserver
 ```
@@ -38,6 +39,17 @@ For now, the static web app stays outside Docker.
 
 This keeps the current frontend workflow simple while the backend is still being introduced.
 The backend container uses Docker Compose `watch` so source edits are synced into the running container, while dependency changes trigger a rebuild.
+
+## Pre-commit
+
+Ruff runs before commits through `pre-commit`.
+
+Install hooks once after `uv sync`:
+
+```sh
+cd backend
+uv run pre-commit install
+```
 
 Backend defaults:
 
