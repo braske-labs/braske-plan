@@ -42,6 +42,7 @@ services:
           path: ./backend/.python-version
         - action: sync+restart
           path: ./backend/.env
+          target: /app/.env
 
 volumes:
   postgres_data:

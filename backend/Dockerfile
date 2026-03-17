@@ -5,10 +5,9 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY pyproject.toml README.md .python-version ./
+COPY pyproject.toml .python-version ./
 RUN uv sync --no-dev
 
 COPY . .
 
 CMD ["uv", "run", "python", "manage.py", "runserver", "0.0.0.0:8000"]
-
