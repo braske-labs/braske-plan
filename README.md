@@ -10,6 +10,15 @@ Apartment planning and renovation estimation project.
 - `docs/` - architecture and product notes
 - `scripts/` - small project utilities
 
+## Prerequisites
+
+Install these tools first:
+
+- Docker Desktop
+- Python 3.10+
+- `uv`
+- Node.js 20+ with Corepack enabled
+
 ## Frontend Development
 
 ### 1. Prepare local frontend environment
@@ -37,35 +46,15 @@ Frontend default:
 
 - `http://127.0.0.1:4173`
 
-## Prerequisites
-
-Install these tools first:
-
-- Docker Desktop
-- Python 3.10+
-- `uv`
-- Node.js 20+ with Corepack enabled
-
 ## Backend Development
 
-### 1. Prepare backend environment
+### 1. Prepare Docker backend environment
 
 ```sh
-cd backend
-uv sync
-cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
-### 2. Optional: install local git hooks
-
-If you want Ruff to run automatically before local commits:
-
-```sh
-cd backend
-uv run pre-commit install
-```
-
-### 3. Start the backend with Docker Compose
+### 2. Start the backend with Docker Compose
 
 This is the default backend development flow.
 
@@ -74,14 +63,25 @@ docker compose build
 docker compose up --watch
 ```
 
-### 4. Alternative: run the backend locally with `uv`
+### 3. Alternative: run the backend locally with `uv`
 
 Use this if you explicitly want a non-Docker backend process.
 
 ```sh
 cd backend
+uv sync
+cp .env.example .env
 uv run python manage.py migrate
 uv run python manage.py runserver
+```
+
+### 4. Optional: install local git hooks
+
+If you want Ruff to run automatically before local commits:
+
+```sh
+cd backend
+uv run pre-commit install
 ```
 
 ### 5. Optional: create a Django admin user
@@ -98,12 +98,6 @@ Admin:
 ### 6. Frontend during backend development
 
 The frontend stays outside Docker and runs with Vite.
-
-```sh
-cd app
-corepack pnpm install
-corepack pnpm dev
-```
 The backend container uses Docker Compose `watch` so source edits are synced into the running container, while dependency changes trigger a rebuild.
 
 ### Backend defaults
