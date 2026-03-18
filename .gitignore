@@ -9,6 +9,7 @@ Thumbs.db
 !.env.example
 
 node_modules/
+.vite/
 dist/
 build/
 .next/
