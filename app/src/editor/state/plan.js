@@ -35,8 +35,8 @@ export function createEmptyPlan() {
       updatedAt: now
     },
     background: {
-      sourceType: "sample",
-      source: "apartment1.png",
+      sourceType: "none",
+      source: "",
       opacity: 0.35,
       transform: { x: 120, y: 80, width: 980, height: 720 }
     },
@@ -68,6 +68,28 @@ export function planReducer(plan, action) {
   switch (action.type) {
     case "plan/replace":
       return stampPlan(action.plan);
+
+    case "plan/background/setSource": {
+      const nextSource = typeof action.source === "string" ? action.source.trim() : "";
+      const nextSourceType =
+        typeof action.sourceType === "string" && action.sourceType.trim()
+          ? action.sourceType.trim()
+          : "uploaded";
+      if (!nextSource) {
+        return plan;
+      }
+      if (plan.background.source === nextSource && plan.background.sourceType === nextSourceType) {
+        return plan;
+      }
+      return stampPlan({
+        ...plan,
+        background: {
+          ...plan.background,
+          sourceType: nextSourceType,
+          source: nextSource
+        }
+      });
+    }
 
     case "plan/background/setOpacity": {
       const nextOpacity = clampNumber(action.opacity, 0, 1, plan.background.opacity);

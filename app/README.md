@@ -1,13 +1,21 @@
 # App Scaffold
 
-Vanilla JS + ES modules app shell for the apartment planner MVP.
+Vanilla JS app shell for the apartment planner MVP, now served locally with Vite.
 
 ## Run locally
 
-From the repo root:
+Install dependencies:
 
 ```sh
-bash scripts/dev.sh
+cd app
+corepack pnpm install
+```
+
+Then start the Vite dev server:
+
+```sh
+cd app
+corepack pnpm dev
 ```
 
 Open:
@@ -16,7 +24,8 @@ Open:
 Alternate port:
 
 ```sh
-bash scripts/dev.sh 8080
+cd app
+corepack pnpm dev -- --host 127.0.0.1 --port 8080 --strictPort
 ```
 
 ## Snapping reference (for humans)

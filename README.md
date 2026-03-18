@@ -10,6 +10,33 @@ Apartment planning and renovation estimation project.
 - `docs/` - architecture and product notes
 - `scripts/` - small project utilities
 
+## Frontend Development
+
+### 1. Prepare local frontend environment
+
+```sh
+cd app
+corepack pnpm install
+```
+
+### 2. Start the Vite dev server
+
+```sh
+cd app
+corepack pnpm dev
+```
+
+Alternate port:
+
+```sh
+cd app
+corepack pnpm dev -- --host 127.0.0.1 --port 8080 --strictPort
+```
+
+Frontend default:
+
+- `http://127.0.0.1:4173`
+
 ## Backend Development
 
 ### 1. Prepare local backend environment
@@ -61,13 +88,13 @@ Admin:
 
 ### 5. Frontend during backend development
 
-For now, the static web app stays outside Docker.
+For now, the frontend stays outside Docker and runs with Vite.
 
-- Frontend: run `bash scripts/dev.sh`
+- Frontend: run `cd app && corepack pnpm dev`
 - Backend: run with `uv` from `backend/`, or use Docker Compose with `watch`
 - Database: run through Docker Compose
 
-This keeps the current frontend workflow simple while the backend is still being introduced.
+This keeps the frontend fast to iterate on while the backend is still being introduced.
 The backend container uses Docker Compose `watch` so source edits are synced into the running container, while dependency changes trigger a rebuild.
 
 ### Backend defaults
