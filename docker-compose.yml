@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: braske_plan
+      POSTGRES_USER: braske_plan
+      POSTGRES_PASSWORD: braske_plan
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./backend
+    working_dir: /app
+    command: uv run python manage.py runserver 0.0.0.0:8000
+    env_file:
+      - ./backend/.env
+    environment:
+      POSTGRES_HOST: db
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    develop:
+      watch:
+        - action: sync
+          path: ./backend
+          target: /app
+          ignore:
+            - .venv/
+            - __pycache__/
+            - .pytest_cache/
+            - .ruff_cache/
+            - .mypy_cache/
+            - media/
+            - staticfiles/
+        - action: rebuild
+          path: ./backend/pyproject.toml
+        - action: rebuild
+          path: ./backend/.python-version
+        - action: sync+restart
+          path: ./backend/.env
+          target: /app/.env
+
+volumes:
+  postgres_data:

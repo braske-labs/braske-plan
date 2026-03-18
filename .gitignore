@@ -25,3 +25,11 @@ venv/
 ENV/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Django local files
+staticfiles/
+media/
+backend/staticfiles/
+backend/media/
