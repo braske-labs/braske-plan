@@ -11,8 +11,8 @@ def build_empty_plan(*, project_name: str) -> dict:
             "name": project_name or "Untitled plan",
         },
         "background": {
-            "sourceType": "sample",
-            "source": "apartment1.png",
+            "sourceType": "none",
+            "source": "",
             "opacity": 0.35,
             "transform": {"x": 120, "y": 80, "width": 980, "height": 720},
         },

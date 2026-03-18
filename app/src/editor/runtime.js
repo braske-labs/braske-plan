@@ -35,6 +35,7 @@ import {
   outerRectToInteriorRect
 } from "./geometry/wall-shell.js";
 import {
+  uploadProjectAsset,
   updateActiveRevision,
 } from "../api/planner-api.js";
 import {
@@ -1752,6 +1753,63 @@ export function mountEditorRuntime(options) {
     });
   }
 
+  const onBackgroundUploadChange = async (event) => {
+    const input = event.currentTarget;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+
+    const file = input.files && input.files[0] ? input.files[0] : null;
+    if (!file) {
+      return;
+    }
+
+    if (!backendProjectId) {
+      setFileTransferStatus({
+        phase: "error",
+        lastAction: "background-upload",
+        message: "Background upload requires a backend project."
+      });
+      input.value = "";
+      return;
+    }
+
+    setFileTransferStatus({
+      phase: "uploading",
+      lastAction: "background-upload",
+      message: `Uploading ${file.name}...`
+    });
+
+    try {
+      const asset = await uploadProjectAsset(backendProjectId, file);
+      if (destroyed) {
+        return;
+      }
+
+      store.dispatch({
+        type: "plan/background/setSource",
+        sourceType: "uploaded",
+        source: asset.url
+      });
+      autosaveController.flushNow("background-upload");
+
+      setFileTransferStatus({
+        phase: "uploaded",
+        lastAction: "background-upload",
+        message: `Uploaded ${asset.original_filename || file.name}`
+      });
+    } catch (error) {
+      console.warn("Failed to upload background image.", error);
+      setFileTransferStatus({
+        phase: "error",
+        lastAction: "background-upload",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      input.value = "";
+    }
+  };
+
   if (controls.backgroundMoveLeftButton) {
     controls.backgroundMoveLeftButton.addEventListener("click", () => {
       store.dispatch({ type: "plan/background/nudge", dx: -BACKGROUND_NUDGE_STEP, dy: 0 });
@@ -1786,6 +1844,14 @@ export function mountEditorRuntime(options) {
     controls.backgroundScaleUpButton.addEventListener("click", () => {
       store.dispatch({ type: "plan/background/scaleUniform", factor: BACKGROUND_SCALE_UP });
     });
+  }
+
+  if (controls.backgroundUploadButton && controls.backgroundUploadFileInput) {
+    controls.backgroundUploadButton.addEventListener("click", () => {
+      controls.backgroundUploadFileInput.value = "";
+      controls.backgroundUploadFileInput.click();
+    });
+    controls.backgroundUploadFileInput.addEventListener("change", onBackgroundUploadChange);
   }
 
   const onImportJsonFileChange = async (event) => {
@@ -2468,6 +2534,9 @@ export function mountEditorRuntime(options) {
     canvas.removeEventListener("dblclick", onDoubleClick);
     if (controls.importJsonFileInput) {
       controls.importJsonFileInput.removeEventListener("change", onImportJsonFileChange);
+    }
+    if (controls.backgroundUploadFileInput) {
+      controls.backgroundUploadFileInput.removeEventListener("change", onBackgroundUploadChange);
     }
   }
 
@@ -4417,18 +4486,8 @@ function shouldIgnoreGlobalKeyDown(event) {
 
 function describeLoadSource(loadSource) {
   switch (loadSource) {
-    case "localStorage":
-      return "saved local plan";
-    case "none":
-      return "default sample plan";
-    case "storage-unavailable":
-      return "default plan (local storage unavailable)";
-    case "parse-error":
-      return "default plan (saved JSON invalid)";
-    case "invalid-plan":
-      return "default plan (saved plan invalid)";
-    case "storage-read-error":
-      return "default plan (storage read error)";
+    case "bootstrap":
+      return "backend draft";
     default:
       return "default plan";
   }
@@ -4483,6 +4542,9 @@ function formatTimeCompact(isoString) {
 }
 
 function formatBackgroundShort(background, backgroundImageState) {
+  if (!background?.source) {
+    return "bg none";
+  }
   const opacityPercent = Math.round((background?.opacity ?? 0) * 100);
   const imageStatus = formatBackgroundImageStatus(backgroundImageState);
   return `bg ${opacityPercent}% (${imageStatus})`;
@@ -6099,8 +6161,12 @@ function formatFileTransferStatusShort(status) {
   switch (phase) {
     case "importing":
       return "importing";
+    case "uploading":
+      return "uploading";
     case "imported":
       return "imported";
+    case "uploaded":
+      return "uploaded";
     case "exported":
       return "exported";
     case "error":
@@ -6974,7 +7040,7 @@ function drawGrid(ctx, camera, cssWidth, cssHeight) {
 
 function drawBackgroundFrame(ctx, plan, backgroundImageState) {
   const background = plan.background;
-  if (!background?.transform) return;
+  if (!background?.transform || !background?.source) return;
 
   const { x, y, width, height } = background.transform;
   const opacity = Math.max(0, Math.min(1, background.opacity ?? 0.35));

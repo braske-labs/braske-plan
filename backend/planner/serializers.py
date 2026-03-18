@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Project, Revision, User
+from .models import Asset, Project, Revision, User
 from .services import create_project_with_draft
 
 
@@ -34,6 +34,25 @@ class RevisionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+
+class AssetSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+    file = serializers.FileField(write_only=True)
+
+    class Meta:
+        model = Asset
+        fields = ["id", "project", "original_filename", "url", "created_at", "file"]
+        read_only_fields = ["id", "project", "original_filename", "url", "created_at"]
+
+    def get_url(self, obj):
+        request = self.context.get("request")
+        if not obj.file:
+            return None
+        file_url = obj.file.url
+        if request is None:
+            return file_url
+        return request.build_absolute_uri(file_url)
 
 
 class ProjectSerializer(serializers.ModelSerializer):

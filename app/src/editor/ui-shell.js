@@ -75,6 +75,8 @@ export function createEditorShell(root, options = {}) {
   const baseboardConflictToggleButton = root.querySelector("[data-editor-action='debug-baseboard-conflicts-toggle']");
   const backgroundOpacityDownButton = root.querySelector("[data-editor-action='bg-opacity-down']");
   const backgroundOpacityUpButton = root.querySelector("[data-editor-action='bg-opacity-up']");
+  const backgroundUploadButton = root.querySelector("[data-editor-action='bg-upload']");
+  const backgroundUploadFileInput = root.querySelector("[data-editor-file-input='bg-upload']");
   const backgroundMoveLeftButton = root.querySelector("[data-editor-action='bg-move-left']");
   const backgroundMoveRightButton = root.querySelector("[data-editor-action='bg-move-right']");
   const backgroundMoveUpButton = root.querySelector("[data-editor-action='bg-move-up']");
@@ -162,6 +164,8 @@ export function createEditorShell(root, options = {}) {
       baseboardConflictToggleButton,
       backgroundOpacityDownButton,
       backgroundOpacityUpButton,
+      backgroundUploadButton,
+      backgroundUploadFileInput,
       backgroundMoveLeftButton,
       backgroundMoveRightButton,
       backgroundMoveUpButton,
@@ -417,6 +421,8 @@ function buildShell() {
                 <span class="toolbar-inline-status" data-background-status>BG pending...</span>
               </summary>
               <div class="toolbar-disclosure-panel">
+                <button type="button" data-editor-action="bg-upload">Upload Image</button>
+                <input type="file" accept="image/*" data-editor-file-input="bg-upload" hidden>
                 <button type="button" data-editor-action="bg-opacity-down">Opacity -</button>
                 <button type="button" data-editor-action="bg-opacity-up">Opacity +</button>
                 <button type="button" data-editor-action="bg-move-left">Left</button>

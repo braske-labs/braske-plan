@@ -58,14 +58,32 @@ export async function updateActiveRevision(projectId, payload, options = {}) {
   });
 }
 
+export async function listProjectAssets(projectId, options = {}) {
+  return requestJson(`/projects/${encodeURIComponent(projectId)}/assets/`, {
+    ...options,
+    method: "GET"
+  });
+}
+
+export async function uploadProjectAsset(projectId, file, options = {}) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return requestJson(`/projects/${encodeURIComponent(projectId)}/assets/`, {
+    ...options,
+    method: "POST",
+    body: formData,
+    headers: {
+      Accept: "application/json",
+      ...(options.headers ?? {})
+    }
+  });
+}
+
 async function requestJson(path, options = {}) {
   const baseUrl = options.baseUrl ?? DEFAULT_API_BASE_URL;
   const response = await fetch(`${baseUrl}${path}`, {
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...(options.headers ?? {})
-    },
+    headers: buildHeaders(options),
     ...options
   });
 
@@ -75,4 +93,17 @@ async function requestJson(path, options = {}) {
   }
 
   return response.json();
+}
+
+function buildHeaders(options) {
+  const headers = {
+    Accept: "application/json",
+    ...(options.headers ?? {})
+  };
+
+  if (!(options.body instanceof FormData) && !("Content-Type" in headers)) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  return headers;
 }
