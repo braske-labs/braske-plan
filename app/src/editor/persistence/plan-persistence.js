@@ -1,47 +1,6 @@
 import { createEmptyPlan } from "../state/plan.js";
 
-const DEFAULT_STORAGE_KEY = "apartment-planner.mvp.last-plan.v1";
 const DEFAULT_AUTOSAVE_DEBOUNCE_MS = 300;
-
-export function loadPersistedPlan(options = {}) {
-  const storage = options.storage ?? getLocalStorage();
-  const key = options.key ?? DEFAULT_STORAGE_KEY;
-
-  if (!storage) {
-    return { plan: null, source: "storage-unavailable", key };
-  }
-
-  let rawJson = null;
-  try {
-    rawJson = storage.getItem(key);
-  } catch (error) {
-    console.warn("Failed to read persisted plan from localStorage.", error);
-    return { plan: null, source: "storage-read-error", key, error };
-  }
-
-  if (!rawJson) {
-    return { plan: null, source: "none", key };
-  }
-
-  let raw = null;
-  try {
-    raw = JSON.parse(rawJson);
-  } catch (error) {
-    console.warn("Persisted plan JSON is invalid. Falling back to default plan.", error);
-    return { plan: null, source: "parse-error", key, error };
-  }
-
-  try {
-    return {
-      plan: migratePlan(raw),
-      source: "localStorage",
-      key
-    };
-  } catch (error) {
-    console.warn("Persisted plan shape is invalid. Falling back to default plan.", error);
-    return { plan: null, source: "invalid-plan", key, error };
-  }
-}
 
 export function parseImportedPlanJsonText(jsonText) {
   if (typeof jsonText !== "string") {
@@ -61,17 +20,17 @@ export function parseImportedPlanJsonText(jsonText) {
 }
 
 export function createPlanAutosaveController(store, options = {}) {
-  const storage = options.storage ?? getLocalStorage();
-  const key = options.key ?? DEFAULT_STORAGE_KEY;
   const debounceMs = options.debounceMs ?? DEFAULT_AUTOSAVE_DEBOUNCE_MS;
   const onStatus = typeof options.onStatus === "function" ? options.onStatus : null;
+  const onPersistPlan = typeof options.onPersistPlan === "function" ? options.onPersistPlan : null;
+  const backendProjectId = typeof options.backendProjectId === "string" ? options.backendProjectId : null;
 
   let timeoutId = null;
   let pendingPlan = null;
   let destroyed = false;
   let status = {
-    phase: storage ? "idle" : "disabled",
-    key,
+    phase: onPersistPlan ? "idle" : "disabled",
+    backendProjectId,
     lastSavedAt: null,
     lastActionType: null,
     errorMessage: null
@@ -83,7 +42,7 @@ export function createPlanAutosaveController(store, options = {}) {
     if (!action?.type || !action.type.startsWith("plan/")) {
       return;
     }
-    if (!storage) {
+    if (!onPersistPlan) {
       return;
     }
 
@@ -137,8 +96,8 @@ export function createPlanAutosaveController(store, options = {}) {
     }
   }
 
-  function flushNow(reason = "manual") {
-    if (!storage || !pendingPlan) {
+  async function flushNow(reason = "manual") {
+    if (!pendingPlan) {
       return false;
     }
 
@@ -148,7 +107,9 @@ export function createPlanAutosaveController(store, options = {}) {
     }
 
     try {
-      storage.setItem(key, JSON.stringify(pendingPlan));
+      if (onPersistPlan) {
+        await onPersistPlan(pendingPlan);
+      }
       status = {
         ...status,
         phase: "saved",
@@ -165,7 +126,7 @@ export function createPlanAutosaveController(store, options = {}) {
         errorMessage: error instanceof Error ? error.message : String(error)
       };
       emitStatus({ reason });
-      console.warn("Failed to autosave plan to localStorage.", error);
+      console.warn("Failed to autosave plan persistence.", error);
       return false;
     }
   }
@@ -725,17 +686,6 @@ function normalizeLightingLinks(rawLinks, fixtures, legacyGroupsById = new Map()
   }
 
   return links;
-}
-
-function getLocalStorage() {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) {
-      return null;
-    }
-    return window.localStorage;
-  } catch {
-    return null;
-  }
 }
 
 function isPlainObject(value) {

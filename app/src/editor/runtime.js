@@ -35,10 +35,12 @@ import {
   outerRectToInteriorRect
 } from "./geometry/wall-shell.js";
 import {
+  updateActiveRevision,
+} from "../api/planner-api.js";
+import {
   createPlanAutosaveController,
-  loadPersistedPlan,
   parseImportedPlanJsonText
-} from "./persistence/local-plan-storage.js";
+} from "./persistence/plan-persistence.js";
 import { createInitialEditorState } from "./state/editor-ui.js";
 import { createEmptyPlan } from "./state/plan.js";
 import { createEditorSessionStore } from "./state/session-store.js";
@@ -103,30 +105,42 @@ const DEFAULT_QUOTE_MODEL = Object.freeze({
 });
 
 export function mountEditorRuntime(options) {
-  const { canvas, statusElement, overlayElement, shellElement, controls = {} } = options;
+  const {
+    canvas,
+    statusElement,
+    overlayElement,
+    shellElement,
+    initialPlan = null,
+    backendProjectId = null,
+    controls = {}
+  } = options;
   const context = canvas.getContext("2d");
   if (!context) {
     throw new Error("2D canvas context is required");
   }
 
-  const persistedPlanLoad = loadPersistedPlan();
-  const initialPlan = persistedPlanLoad.plan ?? createEmptyPlan();
+  const resolvedInitialPlan = initialPlan ?? createEmptyPlan();
   let persistenceStatus = {
-    loadSource: persistedPlanLoad.source,
+    loadSource: initialPlan ? "bootstrap" : "default",
     phase: "idle",
     lastSavedAt: null,
     lastActionType: null,
-    errorMessage: persistedPlanLoad.error
-      ? (persistedPlanLoad.error instanceof Error ? persistedPlanLoad.error.message : String(persistedPlanLoad.error))
-      : null
+    errorMessage: null
   };
 
   const store = createEditorSessionStore({
-    plan: initialPlan,
+    plan: resolvedInitialPlan,
     editorState: createInitialEditorState()
   });
 
   const autosaveController = createPlanAutosaveController(store, {
+    backendProjectId,
+    onPersistPlan(plan) {
+      if (!backendProjectId) {
+        return Promise.resolve();
+      }
+      return updateActiveRevision(backendProjectId, { plan_json: plan });
+    },
     onStatus(nextStatus) {
       persistenceStatus = {
         ...persistenceStatus,
@@ -135,7 +149,7 @@ export function mountEditorRuntime(options) {
     }
   });
 
-  if (!persistedPlanLoad.plan) {
+  if (!initialPlan) {
     store.dispatch({ type: "plan/debugSeedRectangles" });
   }
 

@@ -1,6 +1,6 @@
-import { mountEditorRuntime } from "./editor/runtime.js";
+import { mountEditorRuntime } from "./runtime.js";
 
-export function createEditorShell(root) {
+export function createEditorShell(root, options = {}) {
   if (root.__editorRuntime && typeof root.__editorRuntime.destroy === "function") {
     root.__editorRuntime.destroy();
   }
@@ -96,6 +96,8 @@ export function createEditorShell(root) {
     statusElement,
     overlayElement,
     shellElement,
+    initialPlan: options.initialPlan ?? null,
+    backendProjectId: options.backendProjectId ?? null,
     controls: {
       resetViewButton,
       resetPlanButton,

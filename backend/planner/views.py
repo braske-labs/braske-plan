@@ -34,7 +34,7 @@ class ProjectListCreateView(generics.ListCreateAPIView):
     queryset = Project.objects.select_related("user", "active_revision").all()
 
     def get_queryset(self):
-        queryset = self.queryset
+        queryset = Project.objects.select_related("user", "active_revision").all()
         user_id = self.request.query_params.get("user")
         if user_id:
             queryset = queryset.filter(user_id=user_id)
