@@ -37,9 +37,18 @@ Frontend default:
 
 - `http://127.0.0.1:4173`
 
+## Prerequisites
+
+Install these tools first:
+
+- Docker Desktop
+- Python 3.10+
+- `uv`
+- Node.js 20+ with Corepack enabled
+
 ## Backend Development
 
-### 1. Prepare local backend environment
+### 1. Prepare backend environment
 
 ```sh
 cd backend
@@ -56,11 +65,18 @@ cd backend
 uv run pre-commit install
 ```
 
-### 3. Start PostgreSQL and the backend
+### 3. Start the backend with Docker Compose
 
-Use one of these approaches.
+This is the default backend development flow.
 
-Local backend with `uv`:
+```sh
+docker compose build
+docker compose up --watch
+```
+
+### 4. Alternative: run the backend locally with `uv`
+
+Use this if you explicitly want a non-Docker backend process.
 
 ```sh
 cd backend
@@ -68,14 +84,7 @@ uv run python manage.py migrate
 uv run python manage.py runserver
 ```
 
-Docker Compose with backend sync/watch:
-
-```sh
-docker compose build
-docker compose up --watch
-```
-
-### 4. Optional: create a Django admin user
+### 5. Optional: create a Django admin user
 
 ```sh
 cd backend
@@ -86,15 +95,15 @@ Admin:
 
 - `http://127.0.0.1:8000/admin/`
 
-### 5. Frontend during backend development
+### 6. Frontend during backend development
 
-For now, the frontend stays outside Docker and runs with Vite.
+The frontend stays outside Docker and runs with Vite.
 
-- Frontend: run `cd app && corepack pnpm dev`
-- Backend: run with `uv` from `backend/`, or use Docker Compose with `watch`
-- Database: run through Docker Compose
-
-This keeps the frontend fast to iterate on while the backend is still being introduced.
+```sh
+cd app
+corepack pnpm install
+corepack pnpm dev
+```
 The backend container uses Docker Compose `watch` so source edits are synced into the running container, while dependency changes trigger a rebuild.
 
 ### Backend defaults
